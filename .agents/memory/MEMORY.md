@@ -1,0 +1,1 @@
+- [GitHub shell authentication](github-shell-auth.md) — connector repository permissions and Replit Shell Git credentials are separate; a working connector does not prove CLI push works.
