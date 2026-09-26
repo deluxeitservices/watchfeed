@@ -1,0 +1,188 @@
+[ec2-user@ip-172-31-40-42 conf.d]$ sudo certbot certificates
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Found the following certs:
+  Certificate Name: 3dgrillsgenius.co.uk
+    Serial Number: 52041ea31ce3e528740471870466901fe70
+    Key Type: ECDSA
+    Domains: 3dgrillsgenius.co.uk
+    Expiry Date: 2026-10-12 09:41:58+00:00 (VALID: 15 days)
+    Certificate Path: /etc/letsencrypt/live/3dgrillsgenius.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/3dgrillsgenius.co.uk/privkey.pem
+  Certificate Name: 950boyz.istockandtax.co.uk
+    Serial Number: 5adce0d965f9c0500f4656d8297fae9f39d
+    Key Type: ECDSA
+    Domains: 950boyz.istockandtax.co.uk
+    Expiry Date: 2026-10-06 21:04:31+00:00 (VALID: 10 days)
+    Certificate Path: /etc/letsencrypt/live/950boyz.istockandtax.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/950boyz.istockandtax.co.uk/privkey.pem
+  Certificate Name: aiyubomelet.com
+    Serial Number: 5dcf28635e8c90857fe2ca9838d7b95c61f
+    Key Type: ECDSA
+    Domains: aiyubomelet.com
+    Expiry Date: 2026-10-11 14:48:55+00:00 (VALID: 15 days)
+    Certificate Path: /etc/letsencrypt/live/aiyubomelet.com/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/aiyubomelet.com/privkey.pem
+  Certificate Name: crm.istockandtax.co.uk
+    Serial Number: 57cc61c39a8aea4a8393624fc478106d52d
+    Key Type: ECDSA
+    Domains: crm.istockandtax.co.uk
+    Expiry Date: 2026-10-06 20:39:28+00:00 (VALID: 10 days)
+    Certificate Path: /etc/letsencrypt/live/crm.istockandtax.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/crm.istockandtax.co.uk/privkey.pem
+  Certificate Name: deluxe-interiors.com
+    Serial Number: 504af56d7190da9b5110c7e7ec6d3e2c46c
+    Key Type: ECDSA
+    Domains: deluxe-interiors.com
+    Expiry Date: 2026-10-13 11:01:31+00:00 (VALID: 16 days)
+    Certificate Path: /etc/letsencrypt/live/deluxe-interiors.com/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/deluxe-interiors.com/privkey.pem
+  Certificate Name: deluxe-it-services.co.uk
+    Serial Number: 59cf68a29e144ea97f23a8590d4ffe6ec87
+    Key Type: ECDSA
+    Domains: deluxe-it-services.co.uk
+    Expiry Date: 2026-10-13 08:31:21+00:00 (VALID: 16 days)
+    Certificate Path: /etc/letsencrypt/live/deluxe-it-services.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/deluxe-it-services.co.uk/privkey.pem
+  Certificate Name: fgcp.co.uk
+    Serial Number: 569d41702ba52a043cdfcdf4da0602010e5
+    Key Type: ECDSA
+    Domains: fgcp.co.uk
+    Expiry Date: 2026-10-12 12:27:45+00:00 (VALID: 15 days)
+    Certificate Path: /etc/letsencrypt/live/fgcp.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/fgcp.co.uk/privkey.pem
+  Certificate Name: hattonbullion.com
+    Serial Number: 5e6ef1c100fd7e07b49a557ea25a1a99b53
+    Key Type: ECDSA
+    Domains: hattonbullion.com
+    Expiry Date: 2026-10-11 11:13:14+00:00 (VALID: 14 days)
+    Certificate Path: /etc/letsencrypt/live/hattonbullion.com/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/hattonbullion.com/privkey.pem
+  Certificate Name: hdiamondjewellery.istockandtax.co.uk
+    Serial Number: 5920a12afcaf1791a515003318a0d20b16d
+    Key Type: ECDSA
+    Domains: hdiamondjewellery.istockandtax.co.uk
+    Expiry Date: 2026-10-06 20:45:48+00:00 (VALID: 10 days)
+    Certificate Path: /etc/letsencrypt/live/hdiamondjewellery.istockandtax.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/hdiamondjewellery.istockandtax.co.uk/privkey.pem
+  Certificate Name: istockandtax.co.uk
+    Serial Number: 5a50ea884b3bce3d028367d0669d0d5d45d
+    Key Type: ECDSA
+    Domains: istockandtax.co.uk
+    Expiry Date: 2026-09-30 12:41:16+00:00 (VALID: 3 days)
+    Certificate Path: /etc/letsencrypt/live/istockandtax.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/istockandtax.co.uk/privkey.pem
+  Certificate Name: jaykom.deluxe-it-services.co.uk
+    Serial Number: 654cbf2975b3bb2d62a2856c259fd57d6aa
+    Key Type: ECDSA
+    Domains: jaykom.deluxe-it-services.co.uk
+    Expiry Date: 2026-12-03 12:38:57+00:00 (VALID: 67 days)
+    Certificate Path: /etc/letsencrypt/live/jaykom.deluxe-it-services.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/jaykom.deluxe-it-services.co.uk/privkey.pem
+  Certificate Name: londondiamonddistrict.co.uk-0001
+    Serial Number: 55a5ddace19a58c08b6e95faa8230af5483
+    Key Type: ECDSA
+    Domains: londondiamonddistrict.co.uk
+    Expiry Date: 2026-10-12 15:38:35+00:00 (VALID: 16 days)
+    Certificate Path: /etc/letsencrypt/live/londondiamonddistrict.co.uk-0001/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/londondiamonddistrict.co.uk-0001/privkey.pem
+  Certificate Name: londondiamonddistrict.co.uk
+    Serial Number: 53a705237b62d7f6eb664683a7510b6a321
+    Key Type: ECDSA
+    Domains: www.londondiamonddistrict.co.uk londondiamonddistrict.co.uk
+    Expiry Date: 2026-10-12 15:36:26+00:00 (VALID: 16 days)
+    Certificate Path: /etc/letsencrypt/live/londondiamonddistrict.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/londondiamonddistrict.co.uk/privkey.pem
+  Certificate Name: londontravel.deluxe-it-services.co.uk
+    Serial Number: 6fb6d4f847daee10e1e75cbbb48788c51c4
+    Key Type: ECDSA
+    Domains: londontravel.deluxe-it-services.co.uk
+    Expiry Date: 2026-12-17 09:25:48+00:00 (VALID: 81 days)
+    Certificate Path: /etc/letsencrypt/live/londontravel.deluxe-it-services.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/londontravel.deluxe-it-services.co.uk/privkey.pem
+  Certificate Name: londontravelservices.com
+    Serial Number: 6ac47d847c0dd25655d6d195173ac2d47ab
+    Key Type: ECDSA
+    Domains: londontravelservices.com
+    Expiry Date: 2026-12-21 10:49:26+00:00 (VALID: 85 days)
+    Certificate Path: /etc/letsencrypt/live/londontravelservices.com/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/londontravelservices.com/privkey.pem
+  Certificate Name: mahjewellery.istockandtax.co.uk
+    Serial Number: 538fec8abe286f6cf42b4a32cb5f8c5d398
+    Key Type: ECDSA
+    Domains: mahjewellery.istockandtax.co.uk
+    Expiry Date: 2026-10-06 20:49:25+00:00 (VALID: 10 days)
+    Certificate Path: /etc/letsencrypt/live/mahjewellery.istockandtax.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/mahjewellery.istockandtax.co.uk/privkey.pem
+  Certificate Name: milestonejewellery.istockandtax.co.uk
+    Serial Number: 51b2fb00921e1dee827df0d04d6fd4be9d6
+    Key Type: ECDSA
+    Domains: milestonejewellery.istockandtax.co.uk
+    Expiry Date: 2026-10-06 21:08:14+00:00 (VALID: 10 days)
+    Certificate Path: /etc/letsencrypt/live/milestonejewellery.istockandtax.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/milestonejewellery.istockandtax.co.uk/privkey.pem
+  Certificate Name: shahjewellers.istockandtax.co.uk
+    Serial Number: 5deca9264ee82514a01421887a1aa806c46
+    Key Type: ECDSA
+    Domains: shahjewellers.istockandtax.co.uk
+    Expiry Date: 2026-10-06 21:14:57+00:00 (VALID: 10 days)
+    Certificate Path: /etc/letsencrypt/live/shahjewellers.istockandtax.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/shahjewellers.istockandtax.co.uk/privkey.pem
+  Certificate Name: shivanijewellers.istockandtax.co.uk
+    Serial Number: 5cd01dbf7c633ccfee48a14fea29f1a03e5
+    Key Type: ECDSA
+    Domains: shivanijewellers.istockandtax.co.uk
+    Expiry Date: 2026-10-06 20:52:31+00:00 (VALID: 10 days)
+    Certificate Path: /etc/letsencrypt/live/shivanijewellers.istockandtax.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/shivanijewellers.istockandtax.co.uk/privkey.pem
+  Certificate Name: shivanistagingcrm.istockandtax.co.uk
+    Serial Number: 51593203608574400ff93cbd8c8485850cc
+    Key Type: ECDSA
+    Domains: shivanistagingcrm.istockandtax.co.uk
+    Expiry Date: 2026-10-06 10:34:02+00:00 (VALID: 9 days)
+    Certificate Path: /etc/letsencrypt/live/shivanistagingcrm.istockandtax.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/shivanistagingcrm.istockandtax.co.uk/privkey.pem
+  Certificate Name: stagingcrm.istockandtax.co.uk
+    Serial Number: 6ddcadf96816cf0816b4b5752bf3689ee2a
+    Key Type: ECDSA
+    Domains: stagingcrm.istockandtax.co.uk
+    Expiry Date: 2026-12-17 13:10:15+00:00 (VALID: 81 days)
+    Certificate Path: /etc/letsencrypt/live/stagingcrm.istockandtax.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/stagingcrm.istockandtax.co.uk/privkey.pem
+  Certificate Name: thewatchspotuk.istockandtax.co.uk
+    Serial Number: 543f47c8f542f8ab2a91df5104d52fb5652
+    Key Type: ECDSA
+    Domains: thewatchspotuk.istockandtax.co.uk
+    Expiry Date: 2026-10-06 20:58:42+00:00 (VALID: 10 days)
+    Certificate Path: /etc/letsencrypt/live/thewatchspotuk.istockandtax.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/thewatchspotuk.istockandtax.co.uk/privkey.pem
+  Certificate Name: tracking.deluxediamond.com
+    Serial Number: 5ab0c8bbe70bf7039a0f7110fa87bdcf6af
+    Key Type: ECDSA
+    Domains: tracking.deluxediamond.com
+    Expiry Date: 2026-09-24 14:36:18+00:00 (INVALID: EXPIRED)
+    Certificate Path: /etc/letsencrypt/live/tracking.deluxediamond.com/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/tracking.deluxediamond.com/privkey.pem
+  Certificate Name: www.aiyubomelet.com
+    Serial Number: 571d4b004dc6526d219323352ff1e488411
+    Key Type: ECDSA
+    Domains: www.aiyubomelet.com
+    Expiry Date: 2026-10-11 14:31:35+00:00 (VALID: 15 days)
+    Certificate Path: /etc/letsencrypt/live/www.aiyubomelet.com/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/www.aiyubomelet.com/privkey.pem
+  Certificate Name: www.deluxe-it-services.co.uk
+    Serial Number: 51f19a04a3ae68bfe47bc248fcb9fcf9783
+    Key Type: ECDSA
+    Domains: www.deluxe-it-services.co.uk
+    Expiry Date: 2026-10-11 13:23:56+00:00 (VALID: 14 days)
+    Certificate Path: /etc/letsencrypt/live/www.deluxe-it-services.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/www.deluxe-it-services.co.uk/privkey.pem
+  Certificate Name: www.londondiamonddistrict.co.uk
+    Serial Number: 5775f9a21a2ce64d78a288f8c140b4e166e
+    Key Type: ECDSA
+    Domains: www.londondiamonddistrict.co.uk
+    Expiry Date: 2026-10-12 15:15:37+00:00 (VALID: 16 days)
+    Certificate Path: /etc/letsencrypt/live/www.londondiamonddistrict.co.uk/fullchain.pem
+    Private Key Path: /etc/letsencrypt/live/www.londondiamonddistrict.co.uk/privkey.pem
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
