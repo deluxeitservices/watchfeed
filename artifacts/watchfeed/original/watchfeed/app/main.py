@@ -13,7 +13,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select, update
 
-from . import advisor, extra, fx, ingest, market, media, refs, waha, worker
+from . import advisor, extra, feed_settings, fx, ingest, market, media, refs, waha, worker
 from .auth import is_admin as live_is_admin, staff_accounts
 from .config import settings
 from .db import Dealer, Group, Message, Offer, SessionLocal, StockItem, init_db, utcnow
@@ -502,6 +502,7 @@ def admin_retry():
 
 
 app.include_router(extra.router)
+app.include_router(feed_settings.router)
 
 
 @app.exception_handler(HTTPException)

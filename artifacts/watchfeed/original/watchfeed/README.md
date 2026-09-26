@@ -122,6 +122,11 @@ New messages then flow in live. Give staff the STAFF_USER / STAFF_PASSWORD login
 Optional `STAFF_USERS` gives each team member an individual login; the existing
 `STAFF_USER` and `STAFF_PASSWORD` still work.
 
+The admin page has a **Feed auto-refresh** switch (off by default). It applies
+only to the admin's market feed; staff use **Refresh now** instead. This switch
+does not pause WhatsApp ingestion or AI parsing, and changing it does not affect
+Anthropic API charges.
+
 ## 4. Staff feed
 
 * **Search** looks across references, models, dial, dealer name and phone and the raw text. `126710 blnr`, `5711`, `daytona panda` and `+852` all work.

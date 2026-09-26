@@ -14,7 +14,7 @@
 </head>
 <body>
 <header class="top"><h1>Trading Feed</h1><nav class="nav"></nav><span class="spacer"></span><span class="meta" id="updated" role="status" aria-live="polite"></span>
-  <label><input type="checkbox" id="auto" checked> <span id="auto-label">Auto-refresh (15s)</span></label><span class="user"></span></header>
+  <span class="meta" id="refresh-mode" hidden></span><button id="refresh-now" type="button">Refresh now</button><span class="user"></span></header>
 <div class="demo-banner" id="demo-banner" hidden>Demo preview — these are fictional sample offers. Live WhatsApp ingestion and admin controls are not enabled.</div>
 <div class="bar">
   <input type="search" id="q" placeholder="Search reference, model, dealer… e.g. 126710 blnr">
@@ -38,7 +38,7 @@
 <script>
 renderNav("/");
 let state={page:1,sort:"last_seen",order:"desc",total:0,pageSize:50,direction:""};
-let latestLoad=0, autoLoadRunning=false;
+let latestLoad=0, autoLoadRunning=false, isAdminViewer=false, autoEnabled=false;
 const FILTERS=["period","brand","condition","set_type","country","group","min_price","max_price","year_from"], CHECKS=["deals_only","priced_only","hide_handled","show_blocked"];
 function params(){const p=new URLSearchParams(),v=id=>$(id).value.trim();if(v("q"))p.set("q",v("q"));if(state.direction)p.set("direction",state.direction);
   FILTERS.forEach(k=>{if(v(k))p.set(k,v(k));});CHECKS.forEach(k=>{if($(k).checked)p.set(k,"true");});
@@ -59,7 +59,7 @@ function row(o){
 }
 async function load(){const request=++latestLoad;try{const d=await api("/api/offers?"+params());if(request!==latestLoad)return;state.total=d.total;$("rows").innerHTML=d.items.map(row).join("");$("empty").hidden=d.items.length>0;
   $("count").textContent=`${d.total.toLocaleString("en-GB")} offers`;const start=d.total?(state.page-1)*state.pageSize+1:0;$("range").textContent=`${start}–${Math.min(state.page*state.pageSize,d.total)} of ${d.total}`;
-  $("prev").disabled=state.page<=1;$("next").disabled=state.page*state.pageSize>=d.total;$("updated").textContent="Feed checked "+new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  $("prev").disabled=state.page<=1;$("next").disabled=state.page*state.pageSize>=d.total;$("updated").textContent=PREVIEW_MODE?"Sample data":"Feed checked "+new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
 }catch(e){if(request===latestLoad){$("count").textContent="Error loading offers: "+e.message;$("updated").textContent="Refresh failed";}}}
 async function loadFacets(){const f=await api("/api/facets");BASE=f.base_currency; $("basehead").textContent=`Price ${BASE}`;$("min_price").placeholder=`Min ${BASE}`;$("max_price").placeholder=`Max ${BASE}`;
   f.brands.forEach(b=>$("brand").insertAdjacentHTML("beforeend",`<option>${esc(b)}</option>`));f.countries.forEach(c=>$("country").insertAdjacentHTML("beforeend",`<option value="${esc(c)}">${flag(c)} ${esc(c)}</option>`));f.groups.forEach(g=>$("group").insertAdjacentHTML("beforeend",`<option value="${esc(g.id)}">${esc(g.name)}</option>`));}
@@ -73,16 +73,27 @@ $("savealert").onclick=async()=>{if(await isPreview()){toast("Alerts are disable
   const b=modal("Save alert",`<p class="small muted">Notify me when a listing matches these filters.</p><label>Alert name</label><input id="aname" style="width:100%" value="${esc(p.q||p.brand||"My alert")}"><label>Email (optional)</label><input id="aemails" style="width:100%"><label><input type="checkbox" id="atg" checked> Send to staff Telegram</label><div class="row"><button class="primary" id="acreate">Save alert</button><a href="/alerts">Manage alerts →</a></div>`);
   $("acreate").onclick=async()=>{try{await api("/api/alerts","POST",{name:$("aname").value,query:p,emails:$("aemails").value,telegram:$("atg").checked});modal.close();toast("Alert saved");}catch(e){toast(e.message);}};};
 document.addEventListener("offer-updated",load);
+async function syncRefreshSetting(){
+  try{
+    const me=await api("/api/me");
+    isAdminViewer=!!me.is_admin;
+    autoEnabled=isAdminViewer&&!!me.feed_auto_refresh;
+    $("refresh-mode").hidden=!isAdminViewer;
+    if(isAdminViewer)$("refresh-mode").textContent=autoEnabled?"Auto-refresh on (15s)":"Auto-refresh off";
+  }catch(e){autoEnabled=false;$("refresh-mode").hidden=true;}
+}
 async function autoRefresh(){
-  if(autoLoadRunning||!$("auto").checked||document.hidden||($("modal")&&$("modal").open))return;
+  if(autoLoadRunning||!autoEnabled||document.hidden||($("modal")&&$("modal").open))return;
   autoLoadRunning=true;
   try{await load();}finally{autoLoadRunning=false;}
 }
 setInterval(autoRefresh,15000);
-document.addEventListener("visibilitychange",()=>{if(!document.hidden)autoRefresh();});
-window.addEventListener("focus",autoRefresh);
-$("auto").addEventListener("change",()=>{if($("auto").checked)autoRefresh();else $("updated").textContent="Auto-refresh paused";});
-previewReady.then(demo=>{if(demo){$("auto").checked=false;$("auto").disabled=true;$("auto-label").textContent="Demo: no live updates";$("updated").textContent="Sample data";}});
+setInterval(()=>{if(isAdminViewer&&!document.hidden)syncRefreshSetting();},60000);
+async function resumeRefresh(){if(document.hidden)return;if(isAdminViewer)await syncRefreshSetting();autoRefresh();}
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)resumeRefresh();});
+window.addEventListener("focus",resumeRefresh);
+$("refresh-now").addEventListener("click",load);
+previewReady.then(demo=>{if(!demo)syncRefreshSetting();});
 const offer=new URLSearchParams(location.search).get("offer");if(offer)isPreview().then(demo=>{if(!demo)openOffer(offer);});
 loadFacets().catch(()=>{}).finally(load);
 </script>

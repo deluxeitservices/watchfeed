@@ -86,6 +86,23 @@ def test_auth(client):
     assert client.get("/admin", headers=ADMIN).status_code == 200
     assert client.post("/webhook/waha?token=bad", json={}).status_code == 403
 
+
+def test_feed_auto_refresh_is_admin_only(client):
+    endpoint = "/admin/api/feed-refresh"
+    assert client.get(endpoint).status_code == 401
+    assert client.get(endpoint, headers=STAFF).status_code == 401
+    assert client.put(endpoint, headers=ALI, json={"enabled": True}).status_code == 401
+    assert client.get(endpoint, headers=ADMIN).json() == {"enabled": False}
+    assert client.get("/api/me", headers=STAFF).json()["feed_auto_refresh"] is False
+    assert client.get("/api/me", headers=STAFF).json()["is_admin"] is False
+    assert client.put(endpoint, headers=ADMIN, json={"enabled": True}).json() == {"enabled": True}
+    assert client.get(endpoint, headers=ADMIN).json() == {"enabled": True}
+    assert client.get("/api/me", headers=ADMIN).json()["feed_auto_refresh"] is True
+    assert client.get("/api/me", headers=ADMIN).json()["is_admin"] is True
+    assert client.get("/api/me", headers=ALI).json()["feed_auto_refresh"] is False
+    assert client.put(endpoint, headers=ADMIN, json={"enabled": False}).json() == {"enabled": False}
+    assert client.get("/api/me", headers=ADMIN).json()["feed_auto_refresh"] is False
+
 def test_groups_sync_and_toggle(client):
     r = client.post("/admin/api/groups/sync", headers=ADMIN).json()
     assert r == {"found": 3, "added": 3}

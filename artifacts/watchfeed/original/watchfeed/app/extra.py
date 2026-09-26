@@ -6,7 +6,7 @@ import os
 from datetime import timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import case, func, select
@@ -15,6 +15,7 @@ from . import advisor, alerts, market, refs
 from .auth import is_admin, is_staff
 from .config import settings
 from .db import Alert, AlertHit, Dealer, Group, Offer, Photo, SessionLocal, StockItem, utcnow
+from .feed_settings import admin_auto_refresh_enabled
 from .worker_utils import norm_ref
 
 router = APIRouter()
@@ -41,8 +42,12 @@ def _groups(s) -> dict:
 
 
 @router.get("/api/me")
-def me(user: str = Depends(is_staff)):
-    return {"user": user, "base_currency": settings.BASE_CURRENCY, "deal_threshold_pct": settings.DEAL_THRESHOLD_PCT}
+def me(request: Request, user: str = Depends(is_staff)):
+    admin = bool(request.state.is_admin)
+    with SessionLocal() as session:
+        auto_refresh = admin and admin_auto_refresh_enabled(session)
+    return {"user": user, "is_admin": admin, "feed_auto_refresh": auto_refresh,
+            "base_currency": settings.BASE_CURRENCY, "deal_threshold_pct": settings.DEAL_THRESHOLD_PCT}
 
 
 # ------------------------------------------------------------------ photos

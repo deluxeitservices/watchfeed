@@ -50,12 +50,15 @@ def is_staff(request: Request, creds: Optional[HTTPBasicCredentials] = Depends(b
     if settings.DEMO_MODE:
         if request.method not in ("GET", "HEAD"):
             raise HTTPException(403, "Demo preview is read-only")
+        request.state.is_admin = False
         return "demo"
     if not creds:
         _deny()
     if _admin_ok(creds):
+        request.state.is_admin = True
         return creds.username
     pw = staff_accounts().get(creds.username)
     if pw is None or not _eq(creds.password, pw):
         _deny()
+    request.state.is_admin = False
     return creds.username
