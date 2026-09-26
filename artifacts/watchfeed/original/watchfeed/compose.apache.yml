@@ -1,0 +1,11 @@
+# Use with docker-compose.yml when the VPS already runs Apache on ports 80/443.
+# Apache should reverse-proxy a dedicated HTTPS virtual host to localhost:18080.
+services:
+  app:
+    ports:
+      - "127.0.0.1:${WATCHFEED_HOST_PORT:-18080}:8000"
+
+  # Leave the bundled Caddy service out of this deployment.
+  caddy:
+    profiles:
+      - standalone-caddy

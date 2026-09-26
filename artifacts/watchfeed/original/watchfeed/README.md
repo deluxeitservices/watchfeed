@@ -44,6 +44,26 @@ docker compose logs -f app      # Ctrl+C to exit logs
 
 Open `https://feed.yourdomain.co.uk/admin` and log in with ADMIN_USER / ADMIN_PASSWORD.
 
+### VPS with an existing Apache website
+
+If Apache already owns ports 80/443, **do not** run the default Compose command
+above or stop Apache. Keep this repository outside the public web root and use
+the included override instead:
+
+```bash
+docker compose -f docker-compose.yml -f compose.apache.yml up -d --build
+```
+
+This leaves Caddy stopped and binds the Python app only to
+`127.0.0.1:18080` on the VPS. Set up a separate Apache HTTPS virtual host for
+the feed's own subdomain, proxying `/` to `http://127.0.0.1:18080/`. Verify
+that port 18080 is unused before starting (or set `WATCHFEED_HOST_PORT` to a
+different unused local port). Do not point Apache's public document root at
+this project or expose its `.env` file. Ensure the domain's A record points
+to the VPS and that the Apache site has a valid certificate before using the
+admin login. Cloudflare proxy may remain enabled if its origin and HTTPS
+settings are correct; test those after Apache is configured.
+
 ## 3. Connect WhatsApp and pick groups
 
 1. In **/admin**, click **Connect / show QR**.
