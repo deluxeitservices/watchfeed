@@ -59,7 +59,7 @@ function previewSafe(path, method){
 async function api(path, method = "GET", body){
   await previewReady;
   if (!previewSafe(path, method)) throw new Error("This feature is not available in the demo preview.");
-  const r = await fetch(path, {method, credentials:"same-origin",
+  const r = await fetch(path, {method, credentials:"same-origin", cache: method === "GET" ? "no-store" : "default",
     headers: body ? {"Content-Type":"application/json"} : {}, body: body ? JSON.stringify(body) : undefined});
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.detail || r.statusText);
