@@ -1,45 +1,47 @@
-# [Project name]
+# Watch Trading Feed
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Searchable staff feed of WTS/WTB watch offers from selected WhatsApp groups, with a separate protected admin interface.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/watchfeed run dev` — start the imported FastAPI app through its managed workflow
+- `cd artifacts/watchfeed/original/watchfeed && python -m pytest -q tests` — run mocked pipeline tests
+- `artifacts/watchfeed/README.md` — Replit preview and live-service setup details
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- Development preview: `WATCHFEED_DEMO=true` uses an isolated local SQLite database with fictional offers; no WhatsApp or AI access.
+- Live mode: requires staff/admin passwords, webhook secret, PostgreSQL, Anthropic access, and a separate WAHA bridge.
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Imported app: FastAPI, SQLAlchemy, Python 3; no React rewrite of the uploaded app.
+- The pnpm/Express/Drizzle scaffold remains in the workspace but is not used by this feed.
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- Application and tests: `artifacts/watchfeed/original/watchfeed/`
+- Workflow wrapper: `artifacts/watchfeed/package.json`
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Preserve the user's FastAPI code instead of porting it to TypeScript; the generated web artifact is used only as a managed preview wrapper.
+- Isolate demo data from the managed database to avoid accidental exposure of personal dealer details in a public preview.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Staff can search, sort, and filter watch offers and view the source message; admins can manage groups when live services are configured.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- User asked to check and set up the uploaded code and explain what works and how it works.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Demo mode never starts the background worker or accepts WAHA webhooks. Do not activate live mode before configuring auth and the bridge.
+- The imported Docker Compose stack does not automatically run inside the Replit artifact.
 
 ## Pointers
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- `artifacts/watchfeed/README.md` for the actual imported app setup.

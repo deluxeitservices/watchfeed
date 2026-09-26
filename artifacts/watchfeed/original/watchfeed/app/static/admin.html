@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Feed Admin</title>
+<style>
+  :root{--bg:#f6f7f5;--card:#fff;--ink:#16211b;--muted:#6b766f;--line:#e3e7e3;--brand:#0f4d33;--brand2:#1a6b48;--warn:#b4531a}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+  header{background:var(--brand);color:#fff;padding:12px 20px;display:flex;gap:16px;align-items:center}
+  header h1{font-size:18px;margin:0}
+  header a{color:#cfe8da;margin-left:auto}
+  main{max-width:1100px;margin:0 auto;padding:18px 20px 60px;display:grid;gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  h2{font-size:15px;margin:0 0 10px}
+  button,input{font:inherit;border:1px solid var(--line);border-radius:8px;padding:7px 12px;background:#fff;cursor:pointer}
+  button.primary{background:var(--brand2);color:#fff;border-color:var(--brand2)}
+  button:disabled{opacity:.5;cursor:default}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600;background:#eef2ee}
+  .pill.ok{background:#dff3e7;color:#0f7a4a} .pill.bad{background:#fbe5d8;color:var(--warn)}
+  .muted{color:var(--muted)}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .stat{border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+  .stat b{display:block;font-size:20px}
+  table{border-collapse:collapse;width:100%}
+  th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+  #qr{max-width:260px;border:1px solid var(--line);border-radius:8px;display:none}
+  .note{background:#fff8e6;border:1px solid #f1dfae;border-radius:8px;padding:10px 12px;font-size:13px}
+  input[type=search]{flex:1;min-width:200px;cursor:text}
+  .tablewrap{overflow:auto;max-height:70vh}
+</style>
+</head>
+<body>
+<header><h1>Feed Admin</h1><a href="/">Open staff feed →</a></header>
+<main>
+  <section class="card">
+    <h2>WhatsApp connection</h2>
+    <div class="row">
+      <span>Status: <span class="pill" id="status">…</span></span>
+      <span class="muted" id="me"></span>
+      <button class="primary" id="connect">Connect / show QR</button>
+      <button id="restart">Restart bridge</button>
+    </div>
+    <div id="qrbox" style="margin-top:12px;display:none">
+      <p class="muted">On your phone: WhatsApp → Settings → Linked devices → Link a device, then scan.</p>
+      <img id="qr" alt="WhatsApp QR code">
+    </div>
+    <p class="note" style="margin-top:12px">Read-only: this tool never sends messages. Only groups you enable below are stored; private chats are ignored.</p>
+  </section>
+
+  <section class="card">
+    <h2>Stats</h2>
+    <div class="stats" id="stats"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="retry">Retry failed messages</button>
+      <span class="muted" id="errinfo"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Groups</h2>
+    <div class="row" style="margin-bottom:10px">
+      <button class="primary" id="sync">Load groups from WhatsApp</button>
+      <input type="search" id="filter" placeholder="Filter groups…">
+      <button id="enableVis">Enable visible</button>
+      <button id="disableVis">Disable visible</button>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>On</th><th>Group</th><th>Members</th><th>Messages</th><th>Offers</th><th>Last message</th><th>History</th></tr></thead>
+        <tbody id="groups"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+async function api(path, opts = {}){
+  const r = await fetch(path, {credentials:"same-origin", headers:{"Content-Type":"application/json"}, ...opts});
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+const post = (p, b) => api(p, {method:"POST", body: JSON.stringify(b || {})});
+let groups = [];
+
+async function refreshStatus(){
+  try {
+    const s = await api("/admin/api/status");
+    const st = s.status || "UNKNOWN";
+    $("status").textContent = st;
+    $("status").className = "pill " + (st === "WORKING" ? "ok" : (/FAIL|UNREACH|STOP/.test(st) ? "bad" : ""));
+    $("me").textContent = s.me && s.me.id ? `${s.me.name || ""} (${String(s.me.id).split("@")[0]})` : "";
+    const needQr = st === "SCAN_QR_CODE";
+    $("qrbox").style.display = needQr ? "block" : "none";
+    if (needQr){ $("qr").src = "/admin/api/qr?t=" + Date.now(); $("qr").style.display = "block"; }
+    return st;
+  } catch (e) { $("status").textContent = "ERROR"; $("me").textContent = e.message; }
+}
+async function refreshStats(){
+  const s = await api("/admin/api/stats");
+  const m = s.messages_by_status || {};
+  const tiles = [
+    ["Groups enabled", s.groups_enabled], ["Messages (24h)", s.messages_24h], ["Offers (24h)", s.offers_24h],
+    ["Offers total", s.offers_total], ["Waiting for AI", m.NEW || 0], ["Parsed", m.PARSED || 0],
+    ["Skipped (chat)", m.SKIPPED || 0], ["No offer found", m.NO_OFFERS || 0], ["Failed", m.ERROR || 0],
+  ];
+  $("stats").innerHTML = tiles.map(([k, v]) => `<div class="stat"><span class="muted">${k}</span><b>${(v ?? 0).toLocaleString("en-GB")}</b></div>`).join("")
+    + (s.ai_configured ? "" : `<div class="stat" style="border-color:#f1dfae"><b style="font-size:14px;color:#b4531a">ANTHROPIC_API_KEY missing</b></div>`);
+  $("errinfo").textContent = s.last_message_at ? "Last message " + new Date(s.last_message_at).toLocaleString("en-GB") : "";
+}
+function renderGroups(){
+  const f = $("filter").value.toLowerCase();
+  const vis = groups.filter(g => g.name.toLowerCase().includes(f));
+  $("groups").innerHTML = vis.map(g => `<tr>
+    <td><input type="checkbox" data-id="${esc(g.id)}" ${g.enabled ? "checked" : ""}></td>
+    <td>${esc(g.name)}</td><td>${g.participants ?? ""}</td><td>${g.messages}</td><td>${g.offers}</td>
+    <td class="muted">${g.last_message_at ? new Date(g.last_message_at).toLocaleString("en-GB") : ""}</td>
+    <td><button data-backfill="${esc(g.id)}" ${g.enabled ? "" : "disabled"}>Import last 300</button></td></tr>`).join("")
+    || `<tr><td colspan="7" class="muted">No groups yet — connect WhatsApp, then “Load groups from WhatsApp”.</td></tr>`;
+  return vis;
+}
+async function loadGroups(){ groups = await api("/admin/api/groups"); renderGroups(); }
+async function toggle(ids, enabled){ await post("/admin/api/groups/toggle", {ids, enabled}); await loadGroups(); }
+
+$("connect").onclick = async () => {
+  try { await post("/admin/api/connect"); } catch (e) { alertBox(e.message); }
+  poll();
+};
+$("restart").onclick = async () => { await post("/admin/api/restart").catch(() => {}); poll(); };
+$("sync").onclick = async () => {
+  $("sync").disabled = true;
+  try { const r = await post("/admin/api/groups/sync"); $("sync").textContent = `Loaded ${r.found} groups (${r.added} new)`; await loadGroups(); }
+  catch (e) { alertBox(e.message); }
+  finally { $("sync").disabled = false; }
+};
+$("filter").oninput = renderGroups;
+$("enableVis").onclick = () => toggle(renderGroups().map(g => g.id), true);
+$("disableVis").onclick = () => toggle(renderGroups().map(g => g.id), false);
+$("groups").addEventListener("change", e => { if (e.target.dataset.id) toggle([e.target.dataset.id], e.target.checked); });
+$("groups").addEventListener("click", async e => {
+  const id = e.target.dataset.backfill; if (!id) return;
+  e.target.disabled = true; e.target.textContent = "Importing…";
+  try { const r = await post("/admin/api/groups/backfill", {group_id:id, limit:300}); e.target.textContent = `+${r.stored} messages`; refreshStats(); }
+  catch (err) { e.target.textContent = "Failed"; alertBox(err.message); }
+});
+$("retry").onclick = async () => { const r = await post("/admin/api/retry-errors"); $("retry").textContent = `Requeued ${r.requeued}`; refreshStats(); };
+function alertBox(msg){ $("errinfo").textContent = msg; }
+
+let pollTimer;
+async function poll(){
+  clearTimeout(pollTimer);
+  const st = await refreshStatus();
+  if (st !== "WORKING") pollTimer = setTimeout(poll, 4000);
+}
+poll(); refreshStats(); loadGroups();
+setInterval(refreshStats, 30000);
+</script>
+</body>
+</html>

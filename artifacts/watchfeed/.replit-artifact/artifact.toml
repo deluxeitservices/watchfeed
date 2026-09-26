@@ -1,0 +1,33 @@
+kind = "web"
+previewPath = "/"
+title = "Watch Trading Feed"
+description = "Searchable staff feed and administrator controls for watch offers collected from selected WhatsApp trading groups."
+version = "1.0.0"
+id = "artifacts/watchfeed"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/", "/api/offers", "/api/facets" ]
+localPort = 24870
+
+[services.development]
+run = "pnpm --filter @workspace/watchfeed run dev"
+
+[services.production]
+
+[services.production.build]
+args = [ "pnpm", "--filter", "@workspace/watchfeed", "run", "build" ]
+
+[services.production.run]
+args = [ "pnpm", "--filter", "@workspace/watchfeed", "run", "serve" ]
+
+[services.production.run.env]
+PORT = "24870"
+
+[services.production.health.startup]
+path = "/health"
+
+[services.env]
+PORT = "24870"
+BASE_PATH = "/"

@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading Feed</title>
+<style>
+  :root{--bg:#f6f7f5;--card:#fff;--ink:#16211b;--muted:#6b766f;--line:#e3e7e3;--brand:#0f4d33;--brand2:#1a6b48;
+        --wts:#0f7a4a;--wtb:#b4531a;--chip:#eef2ee}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+  header{background:var(--brand);color:#fff;padding:12px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:18px;margin:0;font-weight:650;letter-spacing:.2px}
+  header .meta{opacity:.75;font-size:12px}
+  header .spacer{flex:1}
+  .demo-banner{background:#fff3d4;color:#68420d;padding:9px 20px;border-bottom:1px solid #e7c67c;font-size:13px}
+  header label{font-size:12px;opacity:.9;display:flex;gap:6px;align-items:center}
+  .bar{background:var(--card);border-bottom:1px solid var(--line);padding:12px 20px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;position:sticky;top:0;z-index:5}
+  input,select,button{font:inherit;border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:#fff;color:var(--ink)}
+  input[type=search]{min-width:260px;flex:1 1 260px}
+  input.num{width:96px}
+  button{cursor:pointer}
+  button.primary{background:var(--brand2);color:#fff;border-color:var(--brand2)}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{border:0;border-radius:0;padding:7px 12px}
+  .seg button.on{background:var(--brand);color:#fff}
+  main{padding:14px 20px 40px}
+  .summary{color:var(--muted);margin:0 0 10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .tablewrap{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:auto}
+  table{border-collapse:collapse;width:100%;min-width:1100px}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);text-align:left;padding:10px;border-bottom:1px solid var(--line);white-space:nowrap;cursor:pointer;user-select:none;background:#fbfcfb}
+  td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:hover td{background:#fafcfa}
+  .dir{font-size:11px;font-weight:700;padding:2px 7px;border-radius:5px;color:#fff}
+  .dir.WTS{background:var(--wts)} .dir.WTB{background:var(--wtb)}
+  .ref{font-weight:650}
+  .sub{color:var(--muted);font-size:12px}
+  .chip{display:inline-block;background:var(--chip);border-radius:5px;padding:1px 6px;font-size:12px;margin:1px 2px 1px 0}
+  .price{font-weight:650;white-space:nowrap}
+  .base{color:var(--brand2);font-weight:700;white-space:nowrap}
+  a{color:var(--brand2)}
+  .fresh{color:#c0392b;font-weight:600}
+  .msgbtn{border:0;background:none;color:var(--brand2);padding:0;text-decoration:underline}
+  .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:12px}
+  .empty{padding:40px;text-align:center;color:var(--muted)}
+  dialog{border:0;border-radius:12px;max-width:720px;width:92vw;padding:0}
+  dialog .hd{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+  dialog pre{white-space:pre-wrap;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:16px 18px;max-height:60vh;overflow:auto}
+  mark{background:#fff1a8}
+  @media (max-width:700px){main,.bar,header{padding-left:12px;padding-right:12px} input[type=search]{min-width:0}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Trading Feed</h1>
+  <span class="meta" id="updated"></span>
+  <span class="spacer"></span>
+  <label><input type="checkbox" id="auto" checked> Auto-refresh</label>
+</header>
+<div class="demo-banner" id="demo-banner" hidden>Demo preview — these are fictional sample offers. Live WhatsApp ingestion and admin controls are not enabled.</div>
+
+<div class="bar">
+  <input type="search" id="q" placeholder="Search reference, model, dealer… e.g. 126710 blnr">
+  <div class="seg" id="dir">
+    <button data-v="" class="on">All</button><button data-v="WTS">WTS</button><button data-v="WTB">WTB</button>
+  </div>
+  <select id="period">
+    <option value="6h">6 hours</option><option value="1d">1 day</option><option value="3d">3 days</option>
+    <option value="1w">1 week</option><option value="2w" selected>2 weeks</option><option value="1m">1 month</option>
+    <option value="3m">3 months</option><option value="all">All time</option>
+  </select>
+  <select id="brand"><option value="">All brands</option></select>
+  <select id="condition">
+    <option value="">Any condition</option><option value="NEW">New</option><option value="LIKE_NEW">Like new</option>
+    <option value="USED">Pre-owned</option><option value="VINTAGE">Vintage</option>
+  </select>
+  <select id="set_type">
+    <option value="">Any set</option><option value="FULL_SET">Full set</option><option value="WATCH_ONLY">Watch only</option>
+    <option value="BOX_ONLY">Watch + box</option><option value="PAPERS_ONLY">Watch + papers</option>
+  </select>
+  <select id="country"><option value="">All locations</option></select>
+  <select id="group"><option value="">All groups</option></select>
+  <input class="num" id="min_price" type="number" placeholder="Min £">
+  <input class="num" id="max_price" type="number" placeholder="Max £">
+  <input class="num" id="year_from" type="number" placeholder="Year ≥">
+  <label class="sub"><input type="checkbox" id="priced_only"> Priced only</label>
+  <button id="reset">Reset</button>
+</div>
+
+<main>
+  <div class="summary"><span id="count">Loading…</span></div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th data-sort="last_seen">Seen</th><th>Type</th><th data-sort="brand">Model &amp; reference</th>
+        <th>Condition</th><th>Set</th><th data-sort="year">Year</th><th>Original price</th>
+        <th data-sort="price" id="basehead">Price £</th><th>Dealer</th><th>Location</th>
+        <th data-sort="seen_count">Posts</th><th>Message</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>No offers match these filters.</div>
+  </div>
+  <div class="pager">
+    <span class="sub" id="range"></span>
+    <button id="prev">‹ Prev</button><button id="next">Next ›</button>
+  </div>
+</main>
+
+<dialog id="dlg">
+  <div class="hd"><strong id="dlgtitle">Original message</strong><button onclick="dlg.close()">Close</button></div>
+  <div class="sub" id="dlgmeta" style="padding:10px 18px 0"></div>
+  <pre id="dlgbody"></pre>
+</dialog>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const COND = {NEW:"New",LIKE_NEW:"Like new",USED:"Pre-owned",VINTAGE:"Vintage"};
+const SETS = {FULL_SET:"Full set",WATCH_ONLY:"Watch only",BOX_ONLY:"Watch + box",PAPERS_ONLY:"Watch + papers"};
+const flag = cc => cc && /^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map(c => 127397 + c.charCodeAt())) : "";
+let state = {page:1, sort:"last_seen", order:"desc", direction:"", total:0, pageSize:50};
+let base = "GBP";
+
+function fmtMoney(v, cur){
+  if (v == null) return "";
+  try { return new Intl.NumberFormat("en-GB",{style:"currency",currency:cur,maximumFractionDigits:0}).format(v); }
+  catch { return `${cur||""} ${Math.round(v).toLocaleString("en-GB")}`; }
+}
+function ago(iso){
+  const s = (Date.now() - new Date(iso)) / 1000;
+  if (s < 3600) return `${Math.max(1, Math.round(s/60))} min ago`;
+  if (s < 86400) return `${Math.round(s/3600)} h ago`;
+  if (s < 172800) return "Yesterday";
+  return new Date(iso).toLocaleDateString("en-GB",{day:"numeric",month:"short"});
+}
+function params(){
+  const p = new URLSearchParams();
+  const v = id => $(id).value.trim();
+  if (v("q")) p.set("q", v("q"));
+  if (state.direction) p.set("direction", state.direction);
+  ["period","brand","condition","set_type","country","group","min_price","max_price","year_from"].forEach(k => { if (v(k)) p.set(k, v(k)); });
+  if ($("priced_only").checked) p.set("priced_only","true");
+  p.set("sort", state.sort); p.set("order", state.order); p.set("page", state.page); p.set("page_size", state.pageSize);
+  return p;
+}
+async function api(path){
+  const r = await fetch(path, {credentials:"same-origin"});
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function row(o){
+  const title = [o.brand, o.family, o.model].filter(Boolean).join(" · ");
+  const details = [o.dial_color && `${o.dial_color} dial`, o.case_material, o.bracelet, o.diamond_indices && "diamond indices"].filter(Boolean);
+  const phone = o.dealer_phone ? `<a href="https://wa.me/${esc(o.dealer_phone)}" target="_blank" rel="noopener">+${esc(o.dealer_phone)}</a>` : "";
+  const fresh = (Date.now() - new Date(o.last_seen_at)) < 3600e3;
+  const date = o.year ? (o.month ? `${String(o.month).padStart(2,"0")}/${o.year}` : o.year) : "";
+  const disc = o.discount_pct != null ? `<div class="sub">${o.discount_pct > 0 ? "+" : ""}${o.discount_pct}% vs retail</div>` : "";
+  return `<tr>
+    <td class="${fresh ? "fresh" : ""}" title="${esc(new Date(o.last_seen_at).toLocaleString("en-GB"))}">${ago(o.last_seen_at)}</td>
+    <td><span class="dir ${o.direction}">${o.direction}</span></td>
+    <td><div class="ref">${esc(o.reference || "—")}</div><div>${esc(title)}</div>
+        <div class="sub">${details.map(d => `<span class="chip">${esc(d)}</span>`).join("")}</div>
+        ${o.notes ? `<div class="sub">${esc(o.notes)}</div>` : ""}</td>
+    <td>${esc(COND[o.condition] || "")}</td>
+    <td>${esc(SETS[o.set_type] || "")}</td>
+    <td>${esc(date)}</td>
+    <td class="price">${o.price != null ? esc(fmtMoney(o.price, o.currency)) : ""}${disc}</td>
+    <td class="base">${o.price_base != null ? esc(fmtMoney(o.price_base, base)) : ""}</td>
+    <td>${esc(o.dealer_name || "")}<div class="sub">${phone}</div></td>
+    <td>${flag(o.country)} ${esc(o.city || o.country || "")}</td>
+    <td title="${esc(o.groups.join(", "))}">${o.seen_count > 1 ? `×${o.seen_count}` : "1"}<div class="sub">${o.groups.length} grp</div></td>
+    <td><button class="msgbtn" data-id="${o.id}">View</button></td>
+  </tr>`;
+}
+async function load(){
+  try {
+    const d = await api("/api/offers?" + params());
+    state.total = d.total;
+    $("rows").innerHTML = d.items.map(row).join("");
+    $("empty").hidden = d.items.length > 0;
+    $("count").textContent = `${d.total.toLocaleString("en-GB")} offers`;
+    const start = d.total ? (state.page - 1) * state.pageSize + 1 : 0;
+    $("range").textContent = `${start}–${Math.min(state.page * state.pageSize, d.total)} of ${d.total}`;
+    $("prev").disabled = state.page <= 1;
+    $("next").disabled = state.page * state.pageSize >= d.total;
+    $("updated").textContent = "Updated " + new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"});
+  } catch (e) { $("count").textContent = "Error loading offers: " + e.message; }
+}
+async function loadFacets(){
+  const f = await api("/api/facets");
+  base = f.base_currency;
+  $("basehead").textContent = `Price ${base}`;
+  $("min_price").placeholder = `Min ${base}`; $("max_price").placeholder = `Max ${base}`;
+  f.brands.forEach(b => $("brand").insertAdjacentHTML("beforeend", `<option>${esc(b)}</option>`));
+  f.countries.forEach(c => $("country").insertAdjacentHTML("beforeend", `<option value="${esc(c)}">${flag(c)} ${esc(c)}</option>`));
+  f.groups.forEach(g => $("group").insertAdjacentHTML("beforeend", `<option value="${esc(g.id)}">${esc(g.name)}</option>`));
+}
+async function openMessage(id){
+  const o = await api(`/api/offers/${id}`);
+  $("dlgtitle").textContent = `${o.direction} · ${o.reference || o.model || o.brand || ""}`;
+  $("dlgmeta").textContent = `${o.dealer_name || ""} ${o.dealer_phone ? "+" + o.dealer_phone : ""} · ${o.groups.join(", ")}`;
+  let html = esc(o.original_message || "");
+  const src = esc((o.source_text || "").trim());
+  if (src && html.includes(src)) html = html.replace(src, `<mark>${src}</mark>`);
+  $("dlgbody").innerHTML = html;
+  $("dlg").showModal();
+}
+
+let t;
+const reload = () => { state.page = 1; clearTimeout(t); t = setTimeout(load, 250); };
+$("q").addEventListener("input", reload);
+document.querySelectorAll(".bar select, .bar input:not(#q)").forEach(el => el.addEventListener("change", reload));
+$("dir").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  $("dir").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+  state.direction = b.dataset.v; reload();
+});
+document.querySelectorAll("th[data-sort]").forEach(th => th.addEventListener("click", () => {
+  const s = th.dataset.sort;
+  state.order = state.sort === s && state.order === "desc" ? "asc" : "desc";
+  state.sort = s; reload();
+}));
+$("rows").addEventListener("click", e => { const b = e.target.closest(".msgbtn"); if (b) openMessage(b.dataset.id); });
+$("prev").onclick = () => { state.page--; load(); };
+$("next").onclick = () => { state.page++; load(); };
+$("reset").onclick = () => {
+  document.querySelectorAll(".bar input").forEach(i => i.type === "checkbox" ? i.checked = false : i.value = "");
+  document.querySelectorAll(".bar select").forEach(s => s.selectedIndex = 0);
+  $("period").value = "2w"; $("dir").querySelector("button").click();
+};
+setInterval(() => { if ($("auto").checked && state.page === 1 && !$("dlg").open) load(); }, 60000);
+loadFacets().catch(() => {}).finally(load);
+fetch("/health").then(r => r.json()).then(s => { if (s.demo) $("demo-banner").hidden = false; }).catch(() => {});
+</script>
+</body>
+</html>

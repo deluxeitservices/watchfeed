@@ -1,0 +1,7 @@
+{$DOMAIN} {
+	encode gzip
+	# WhatsApp bridge webhook is internal only
+	@webhook path /webhook/*
+	respond @webhook 404
+	reverse_proxy app:8000
+}
