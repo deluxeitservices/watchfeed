@@ -22,7 +22,10 @@ services:
       WHATSAPP_API_KEY: ${WAHA_API_KEY}
       WAHA_DASHBOARD_ENABLED: "false"
       WHATSAPP_SWAGGER_ENABLED: "false"
-      WHATSAPP_DOWNLOAD_MEDIA: "false"
+      WHATSAPP_DOWNLOAD_MEDIA: "true"
+      WHATSAPP_FILES_MIMETYPES: "image/jpeg,image/png,image/webp"
+      WHATSAPP_FILES_LIFETIME: "600"
+      WAHA_BASE_URL: http://waha:3000
       WAHA_PRINT_QR: "false"
       TZ: Europe/London
     volumes:
@@ -36,6 +39,9 @@ services:
       DATABASE_URL: postgresql+psycopg://watchfeed:${POSTGRES_PASSWORD}@db:5432/watchfeed
       WAHA_URL: http://waha:3000
       APP_INTERNAL_URL: http://app:8000
+      MEDIA_DIR: /data/media
+    volumes:
+      - media:/data/media
     depends_on:
       db:
         condition: service_healthy
@@ -58,6 +64,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  media:
   pgdata:
   waha_sessions:
   caddy_data:

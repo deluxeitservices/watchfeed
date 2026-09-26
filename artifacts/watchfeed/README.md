@@ -8,7 +8,7 @@ created by the workspace is not used for the feed.
 
 The development environment sets `WATCHFEED_DEMO=true`. The staff feed at `/`
 shows four **fictional** watch offers, stored only in a separate local
-`watchfeed_demo.db`. The preview cannot ingest WhatsApp messages, run AI extraction,
+`watchfeed_preview.db`. The preview cannot ingest WhatsApp messages, run AI extraction,
 or access the original database. `/admin` remains password protected.
 
 ## To run live

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Our Stock</title><link rel="stylesheet" href="/static/app.css">
+<style>
+  .tablewrap table{min-width:900px}.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;align-items:end}
+  .form label{font-size:12px;color:var(--muted);display:block;margin-bottom:3px}.form input,.form select{width:100%}.wanted{font-weight:700;color:var(--blue)}
+</style>
+</head>
+<body>
+<header class="top"><h1>Our Stock</h1><nav class="nav"></nav><span class="spacer"></span><span class="user"></span></header>
+<main class="narrow">
+  <section class="card" style="margin-bottom:14px"><h2>Add a watch</h2><div class="form">
+    <div><label>Reference *</label><input id="f_reference" placeholder="126610LN"></div><div><label>Description</label><input id="f_description" placeholder="Submariner Date"></div>
+    <div><label>Condition</label><select id="f_condition"><option value="">—</option><option value="NEW">New</option><option value="LIKE_NEW">Like new</option><option value="USED">Pre-owned</option><option value="VINTAGE">Vintage</option></select></div>
+    <div><label>Box &amp; papers</label><select id="f_set_type"><option value="">—</option><option value="FULL_SET">Full set</option><option value="PAPERS_ONLY">Papers only</option><option value="BOX_ONLY">Box only</option><option value="WATCH_ONLY">Watch only</option></select></div>
+    <div><label>Year</label><input id="f_year" type="number"></div><div><label>Our price (£)</label><input id="f_asking_price" type="number"></div><div><button class="primary" id="add" style="width:100%">Add</button></div>
+  </div><p class="small muted" style="margin-top:10px">Or <button class="linkish" id="csvbtn">import a CSV</button>. Dealer WTB matches appear below.</p></section>
+  <div class="row" style="margin-bottom:10px"><div class="seg" id="status"><button data-v="ACTIVE" class="on">In stock</button><button data-v="SOLD">Sold</button><button data-v="">All</button></div></div>
+  <div class="tablewrap"><table><thead><tr><th>Reference</th><th>Condition</th><th>Set</th><th>Year</th><th>Our price</th><th>Dealers asking (similar)</th><th>vs market</th><th>Dealers wanting it (30d)</th><th></th></tr></thead>
+    <tbody id="rows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody></table></div>
+</main>
+<script src="/static/common.js"></script>
+<script>
+renderNav("/stock");
+let status="ACTIVE";
+async function load(){
+  const d=await api("/api/stock?status="+status);BASE=d.base_currency||BASE;
+  $("rows").innerHTML=d.items.map(i=>`<tr><td><button class="linkish ref" data-ref="${esc(i.reference_norm)}">${esc(i.reference)}</button><div class="small muted">${esc(i.description||"")}</div></td>
+    <td>${esc(COND[i.condition]||"")}</td><td>${esc(SETS[i.set_type]||"")}</td><td>${esc(i.year||"")}</td><td class="price">${money(i.asking_price)}</td>
+    <td>${i.market_typical?money(i.market_typical):`<span class="small muted">not enough data</span>`}</td>
+    <td>${i.vs_market_pct==null?"":`<span class="badge ${i.vs_market_pct>5?"r-CAUTION":i.vs_market_pct < -5?"deal":"r-OK"}">${i.vs_market_pct>0?"+":""}${i.vs_market_pct}%</span>`}</td>
+    <td>${i.wtb_dealers_30d?`<button class="linkish wanted" data-matches="${i.id}" data-ref-name="${esc(i.reference)}">${i.wtb_dealers_30d} dealer(s) →</button>`:"0"}</td>
+    <td><div class="row" style="flex-wrap:nowrap">${i.status==="ACTIVE"?`<button data-sold="${i.id}">Mark sold</button>`:`<span class="small muted">sold</span>`}<button class="danger" data-del="${i.id}">Delete</button></div></td></tr>`).join("")||`<tr><td colspan="9" class="empty">No watches here yet.</td></tr>`;
+  window._items=Object.fromEntries(d.items.map(i=>[i.id,i]));
+}
+isPreview().then(demo=>{if(demo){$("rows").innerHTML="<tr><td colspan='9' class='empty'>Stock management and matching are disabled in demo preview.</td></tr>";document.querySelectorAll("#add,#csvbtn").forEach(b=>b.disabled=true);}else load().catch(e=>$("rows").innerHTML=`<tr><td colspan="9" class="err">${esc(e.message)}</td></tr>`);});
+$("status").onclick=e=>{const b=e.target.closest("button");if(!b||PREVIEW_MODE)return;status=b.dataset.v;$("status").querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===b));load();};
+$("add").onclick=async()=>{if(await isPreview())return;const body={};["reference","description","condition","set_type","year","asking_price"].forEach(k=>{const v=$("f_"+k).value.trim();body[k]=v===""?null:(k==="year"||k==="asking_price"?Number(v):v);});
+  try{await api("/api/stock","POST",body);["reference","description","year","asking_price"].forEach(k=>$("f_"+k).value="");toast("Added");load();}catch(e){toast(e.message);}};
+$("rows").addEventListener("click",async e=>{if(await isPreview())return;const b=e.target.closest("button");if(!b)return;
+  if(b.dataset.matches){const m=await api(`/api/stock/${b.dataset.matches}/matches`);modal(`Dealers wanting ${b.dataset.refName}`,briefTable(m));}
+  if(b.dataset.sold){const i=window._items[b.dataset.sold];await api(`/api/stock/${i.id}`,"PUT",{...i,status:"SOLD"});load();}
+  if(b.dataset.del){if(!b.dataset.sure){b.dataset.sure=1;b.textContent="Sure?";return;}await api(`/api/stock/${b.dataset.del}`,"DELETE");load();}
+});
+$("csvbtn").onclick=()=>{if(PREVIEW_MODE)return;modal("Import stock from CSV",`<p class="small muted">Paste CSV with header. Only <b>reference</b> is required. Columns: reference,description,condition,set_type,year,asking_price</p>
+  <textarea id="csv" rows="10" style="width:100%;font-family:ui-monospace,monospace"></textarea><div class="row"><button class="primary" id="doimp">Import</button><span id="impres" class="small"></span></div>`);
+  $("doimp").onclick=async()=>{try{const r=await api("/api/stock/import","POST",{csv:$("csv").value});$("impres").textContent=`Added ${r.added}.`+(r.skipped.length?` Skipped: ${r.skipped.join("; ")}`:"");load();}catch(e){$("impres").textContent=e.message;}};
+};
+</script>
+</body>
+</html>

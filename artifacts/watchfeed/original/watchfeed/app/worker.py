@@ -3,29 +3,22 @@ import asyncio
 import hashlib
 import json
 import logging
-import re
 from datetime import timedelta
 from typing import Optional
 
 import httpx
 from sqlalchemy import select
 
-from . import fx
+from . import alerts, fx, market, media, refs
 from .config import settings
 from .db import Group, Message, Offer, ParseCache, SessionLocal, utcnow
 from .parser import ParseError, extract_offers, looks_like_offer
+from .worker_utils import norm_ref  # noqa: F401  (re-exported for existing callers)
 
 log = logging.getLogger("worker")
 
 CONDITIONS = {"NEW", "LIKE_NEW", "USED", "VINTAGE"}
 SET_TYPES = {"FULL_SET", "WATCH_ONLY", "BOX_ONLY", "PAPERS_ONLY"}
-
-
-def norm_ref(ref: Optional[str]) -> Optional[str]:
-    if not ref:
-        return None
-    r = re.sub(r"[^A-Z0-9]", "", ref.upper())
-    return r or None
 
 
 def _s(v, n=200) -> Optional[str]:
@@ -73,6 +66,9 @@ def clean_offer(o: dict) -> Optional[dict]:
     cond = str(o.get("condition") or "").upper() or None
     st = str(o.get("set_type") or "").upper() or None
     country = str(o.get("country") or "").upper()[:2] or None
+    known_brand, known_family = refs.lookup(norm_ref(ref), brand)
+    if known_family:
+        brand, family = known_brand, known_family
     return {
         "direction": direction, "brand": brand, "family": family, "model": model,
         "reference": ref, "reference_norm": norm_ref(ref),
@@ -95,10 +91,22 @@ def fingerprint(o: dict, dealer: str) -> str:
     return hashlib.sha1("|".join(p.lower() for p in parts).encode()).hexdigest()
 
 
-def save_offers(s, msg: Message, raw_offers: list) -> int:
-    dealer_key = msg.sender_phone or (msg.sender_name or "").lower()
+def compute_market_pct(s, o: dict, dealer_key: str, ts) -> Optional[float]:
+    """Compare a priced WTS against recent asks by other dealers for this reference."""
+    if o["direction"] != "WTS" or not o["price_base"] or not o["reference_norm"]:
+        return None
+    rows = s.execute(select(Offer.price_base, Offer.condition, Offer.set_type).where(
+        Offer.reference_norm == o["reference_norm"], Offer.direction == "WTS", Offer.price_base.is_not(None),
+        Offer.last_seen_at >= ts - timedelta(days=30), Offer.dealer_key != dealer_key)).all()
+    comps = [market.normalize(price, condition, set_type) for price, condition, set_type in rows]
+    return market.market_pct(market.normalize(o["price_base"], o["condition"], o["set_type"]), comps)
+
+
+def save_offers(s, msg: Message, raw_offers: list) -> tuple:
+    """Save parsed offers; return (offers found, newly created rows)."""
+    dealer_key = media.sender_key(msg.sender_phone, msg.sender_name) or ""
     window = msg.ts - timedelta(days=settings.DUPLICATE_WINDOW_DAYS)
-    count = 0
+    count, new, touched = 0, [], []
     for raw in raw_offers:
         o = clean_offer(raw)
         if not o:
@@ -115,12 +123,20 @@ def save_offers(s, msg: Message, raw_offers: list) -> int:
             seen = set(filter(None, existing.groups_seen.split(",")))
             seen.add(msg.group_id)
             existing.groups_seen = ",".join(sorted(seen))
+            touched.append(existing)
         else:
-            s.add(Offer(message_id=msg.id, group_id=msg.group_id, groups_seen=msg.group_id,
-                        dealer_name=msg.sender_name, dealer_phone=msg.sender_phone,
-                        fingerprint=fp, first_seen_at=msg.ts, last_seen_at=msg.ts, **o))
+            row = Offer(message_id=msg.id, group_id=msg.group_id, groups_seen=msg.group_id,
+                        dealer_name=msg.sender_name, dealer_phone=msg.sender_phone, dealer_key=dealer_key or None,
+                        market_pct=compute_market_pct(s, o, dealer_key, msg.ts),
+                        fingerprint=fp, first_seen_at=msg.ts, last_seen_at=msg.ts, **o)
+            s.add(row)
+            new.append(row)
+            touched.append(row)
         count += 1
-    return count
+    if touched:
+        s.flush()
+        media.link_for_message(s, msg, touched)
+    return count, new
 
 
 async def _parse(msg: Message, group_name: str, client: httpx.AsyncClient, sem: asyncio.Semaphore):
@@ -161,10 +177,10 @@ async def process_batch(limit: int = 25) -> tuple:
         parsed = await asyncio.gather(*[_parse(m, names.get(m.group_id, ""), client, sem) for m in unique.values()])
     by_hash = dict(zip(unique.keys(), parsed))
     results = [by_hash[m.text_hash] for m in msgs]
-    errors = 0
+    errors, new_ids = 0, []
     with SessionLocal() as s:
         for m, (status, data) in zip(msgs, results):
-            msg = s.get(Message, m.id)
+            msg, created = s.get(Message, m.id), []
             if status == "SKIPPED":
                 msg.status = "SKIPPED"
             elif status == "ERROR":
@@ -174,22 +190,56 @@ async def process_batch(limit: int = 25) -> tuple:
                 if msg.attempts >= 3:
                     msg.status = "ERROR"
             else:
-                n = save_offers(s, msg, data or [])
+                n, created = save_offers(s, msg, data or [])
                 msg.offers_count = n
                 msg.status = "PARSED" if n else "NO_OFFERS"
                 msg.error = None
             s.commit()
+            if status == "OK":
+                new_ids += [o.id for o in created]
+    if new_ids:
+        try:
+            await alerts.process_new_offers(new_ids)
+        except Exception:  # noqa: BLE001 - alert failures must not stop parsing
+            log.exception("alert processing failed")
     return len(msgs), errors
 
 
 async def run_forever() -> None:
     log.info("worker started")
-    last_fx = None
+    last_fx = last_house = None
+    last_clean = None
+    last_outbox = None
     while True:
         try:
             if last_fx is None or utcnow() - last_fx > timedelta(hours=12):
                 await fx.refresh()
                 last_fx = utcnow()
+            if last_house is None or utcnow() - last_house > timedelta(minutes=5):
+                last_house = utcnow()
+                try:
+                    await alerts.maybe_send_digest()
+                except Exception:  # noqa: BLE001 - digest failure must not stop parsing
+                    log.exception("digest processing failed")
+                try:
+                    # Recover work committed just before a restart and retry
+                    # pending deliveries from the DB-backed outbox.
+                    await alerts.retry_recent_offers()
+                except Exception:  # noqa: BLE001 - retries must not stop parsing
+                    log.exception("notification retry failed")
+                if utcnow().hour == 3 and last_clean != utcnow().date():
+                    last_clean = utcnow().date()
+                    try:
+                        with SessionLocal() as s:
+                            media.cleanup(s)
+                    except Exception:  # noqa: BLE001 - cleanup failure must not stop parsing
+                        log.exception("photo cleanup failed")
+            if last_outbox is None or utcnow() - last_outbox >= timedelta(seconds=15):
+                last_outbox = utcnow()
+                try:
+                    await alerts.dispatch_outbox()
+                except Exception:  # noqa: BLE001 - retry failures must not stop parsing
+                    log.exception("notification outbox delivery failed")
             n, errors = await process_batch()
             if errors:
                 await asyncio.sleep(30)

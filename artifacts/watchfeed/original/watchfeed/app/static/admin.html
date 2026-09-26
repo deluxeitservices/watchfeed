@@ -11,7 +11,8 @@
   body{margin:0;font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
   header{background:var(--brand);color:#fff;padding:12px 20px;display:flex;gap:16px;align-items:center}
   header h1{font-size:18px;margin:0}
-  header a{color:#cfe8da;margin-left:auto}
+   header a{color:#cfe8da;margin-left:auto}
+   .demo-banner{background:#fff3d4;color:#68420d;padding:9px 20px;border-bottom:1px solid #e7c67c;font-size:13px}
   main{max-width:1100px;margin:0 auto;padding:18px 20px 60px;display:grid;gap:16px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
   h2{font-size:15px;margin:0 0 10px}
@@ -36,6 +37,7 @@
 </head>
 <body>
 <header><h1>Feed Admin</h1><a href="/">Open staff feed →</a></header>
+<div class="demo-banner" id="demo-banner" hidden>Demo preview — live WhatsApp connection, group controls and administration are disabled.</div>
 <main>
   <section class="card">
     <h2>WhatsApp connection</h2>
@@ -57,6 +59,7 @@
     <div class="stats" id="stats"></div>
     <div class="row" style="margin-top:10px">
       <button id="retry">Retry failed messages</button>
+      <button id="ntest">Send test alert (Telegram / email)</button>
       <span class="muted" id="errinfo"></span>
     </div>
   </section>
@@ -82,6 +85,8 @@
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 async function api(path, opts = {}){
+  await previewReady;
+  if (demoMode) throw new Error("Administration is disabled in demo preview.");
   const r = await fetch(path, {credentials:"same-origin", headers:{"Content-Type":"application/json"}, ...opts});
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(body.detail || r.statusText);
@@ -89,6 +94,23 @@ async function api(path, opts = {}){
 }
 const post = (p, b) => api(p, {method:"POST", body: JSON.stringify(b || {})});
 let groups = [];
+let demoMode = false;
+const previewReady = fetch("/health", {credentials:"same-origin"}).then(r => r.json()).then(s => {
+  demoMode = !!s.demo;
+  if (demoMode) {
+    $("demo-banner").hidden = false;
+    document.querySelectorAll("main button, main input").forEach(el => el.disabled = true);
+    $("status").textContent = "DEMO";
+    $("me").textContent = "Live admin operations are unavailable in preview.";
+  }
+  return demoMode;
+}).catch(() => {
+  demoMode = true;
+  $("demo-banner").hidden = false;
+  $("demo-banner").textContent = "Preview status unavailable — live admin operations are disabled until the server can be checked.";
+  document.querySelectorAll("main button, main input").forEach(el => el.disabled = true);
+  return true;
+});
 
 async function refreshStatus(){
   try {
@@ -151,6 +173,8 @@ $("groups").addEventListener("click", async e => {
   catch (err) { e.target.textContent = "Failed"; alertBox(err.message); }
 });
 $("retry").onclick = async () => { const r = await post("/admin/api/retry-errors"); $("retry").textContent = `Requeued ${r.requeued}`; refreshStats(); };
+$("ntest").onclick = async () => { try { const r = await post("/api/notify/test");
+  alertBox(`Telegram: ${r.telegram ? "sent ✓" : "not set up / failed"} · Email: ${r.email ? "sent ✓" : "not set up / failed"}`); } catch (e) { alertBox(e.message); } };
 function alertBox(msg){ $("errinfo").textContent = msg; }
 
 let pollTimer;
@@ -159,8 +183,9 @@ async function poll(){
   const st = await refreshStatus();
   if (st !== "WORKING") pollTimer = setTimeout(poll, 4000);
 }
-poll(); refreshStats(); loadGroups();
-setInterval(refreshStats, 30000);
+previewReady.then(demo => {
+  if (!demo) { poll(); refreshStats(); loadGroups(); setInterval(refreshStats, 30000); }
+});
 </script>
 </body>
 </html>

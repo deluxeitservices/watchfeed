@@ -87,10 +87,10 @@ async def list_groups() -> list:
     return out
 
 
-async def chat_messages(chat_id: str, limit: int = 300) -> list:
+async def chat_messages(chat_id: str, limit: int = 300, download_media: bool = False) -> list:
     async with _client() as c:
         r = await c.get(f"/api/{settings.WAHA_SESSION}/chats/{chat_id}/messages",
-                        params={"limit": limit, "downloadMedia": "false"})
+                        params={"limit": limit, "downloadMedia": "true" if download_media else "false"})
         r.raise_for_status()
         return r.json()
 

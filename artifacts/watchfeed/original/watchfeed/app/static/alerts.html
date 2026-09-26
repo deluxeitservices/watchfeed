@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alerts</title><link rel="stylesheet" href="/static/app.css">
+<style>
+  .grid{display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start}
+  @media (max-width:900px){.grid{grid-template-columns:1fr}}
+  .alert{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px}
+  .alert.off{opacity:.6}.alert h3{margin:0;font-size:15px}
+  .status{display:flex;gap:6px;align-items:center;font-size:13px;margin:4px 0}
+  .dot{width:9px;height:9px;border-radius:50%}.dot.ok{background:var(--good)} .dot.no{background:#c8cfca}
+  pre.digest{white-space:pre-wrap;font:12.5px/1.5 ui-monospace,monospace;background:#fafbfa;border:1px solid var(--line);border-radius:8px;padding:12px;max-height:60vh;overflow:auto}
+</style>
+</head>
+<body>
+<header class="top"><h1>Alerts</h1><nav class="nav"></nav><span class="spacer"></span><span class="user"></span></header>
+<main class="narrow"><div class="grid">
+  <section class="card"><h2>Saved alerts</h2><p class="small muted">Create alerts from the <a href="/">Market feed</a>: set search and filters, then save them as an alert.</p><div id="list"><p class="muted">Loading…</p></div></section>
+  <aside><section class="card"><h2>Where alerts are sent</h2><div id="channels"></div><p class="small muted">Configured in the server's .env file. The WhatsApp number is never used to send anything.</p></section>
+  <section class="card" style="margin-top:16px"><h2>Morning summary</h2><p class="small muted">Preview the configured morning summary.</p><button id="preview">Preview today's summary</button></section></aside>
+</div></main>
+<script src="/static/common.js"></script>
+<script>
+renderNav("/alerts");
+const LABEL={q:"Search",direction:"Type",brand:"Brand",condition:"Condition",set_type:"Set",country:"Location",group:"Group",min_price:"Min £",max_price:"Max £",year_from:"Year from",year_to:"Year to",priced_only:"Priced only",deals_only:"Deals only"};
+const pretty=(k,v)=>k==="condition"?String(v).split(",").map(x=>COND[x]||x).join("/"):k==="set_type"?String(v).split(",").map(x=>SETS[x]||x).join("/"):v===true||v==="true"?"yes":v;
+async function load(){
+  const d=await api("/api/alerts");
+  $("channels").innerHTML=[["telegram","Telegram group"],["email","Email"]].map(([k,t])=>`<div class="status"><span class="dot ${d.channels[k]?"ok":"no"}"></span>${t}: ${d.channels[k]?"connected":"not set up"}</div>`).join("");
+  if(!d.alerts.length){$("list").innerHTML=`<p class="empty">No alerts yet.</p>`;return;}
+  $("list").innerHTML=d.alerts.map(a=>`<div class="alert ${a.active?"":"off"}"><div class="row" style="justify-content:space-between"><h3>🔔 ${esc(a.name)}</h3>
+    <div class="row"><button data-toggle="${a.id}" data-active="${a.active}">${a.active?"Pause":"Resume"}</button><button data-matches="${a.id}" data-name="${esc(a.name)}">Matches (${a.hit_count})</button><button class="danger" data-del="${a.id}">Delete</button></div></div>
+    <div style="margin:6px 0">${Object.entries(a.query).map(([k,v])=>`<span class="chip">${esc(LABEL[k]||k)}: ${esc(pretty(k,v))}</span>`).join("")}</div>
+    <div class="small muted">${a.hits_7d} matches this week · last ${a.last_hit_at?ago(a.last_hit_at):"never"} · by ${esc(a.created_by||"")}</div></div>`).join("");
+}
+isPreview().then(demo=>{if(demo){$("list").innerHTML="<p class='muted'>Saved alerts and notifications are disabled in demo preview.</p>";$("channels").textContent="Not connected in demo preview."; $("preview").disabled=true;}else load().catch(e=>$("list").innerHTML=`<p class="err">${esc(e.message)}</p>`);});
+$("list").addEventListener("click",async e=>{const b=e.target.closest("button");if(!b)return;
+  if(b.dataset.toggle){await api(`/api/alerts/${b.dataset.toggle}`,"PATCH",{active:b.dataset.active!=="true"});load();}
+  if(b.dataset.del&&confirmDelete(b)){await api(`/api/alerts/${b.dataset.del}`,"DELETE");load();}
+  if(b.dataset.matches){const m=await api(`/api/alerts/${b.dataset.matches}/matches`);modal(`Matches — ${b.dataset.name}`,briefTable(m));}
+});
+function confirmDelete(b){if(b.dataset.sure)return true;b.dataset.sure=1;b.textContent="Click again to delete";setTimeout(()=>{delete b.dataset.sure;b.textContent="Delete";},3000);return false;}
+$("preview").onclick=async()=>{try{const d=await api("/api/digest/preview");modal("Morning summary preview",`<pre class="digest">${esc(d.text)}</pre>`);}catch(e){toast(e.message);}};
+</script>
+</body>
+</html>

@@ -8,13 +8,16 @@ from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select, update
 
-from . import fx, ingest, waha, worker
+from . import advisor, extra, fx, ingest, market, media, refs, waha, worker
+from .auth import is_admin as live_is_admin, staff_accounts
 from .config import settings
-from .db import Group, Message, Offer, SessionLocal, init_db, utcnow
+from .db import Dealer, Group, Message, Offer, SessionLocal, StockItem, init_db, utcnow
+from .parser import ParseError, extract_offers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("app")
@@ -23,8 +26,8 @@ STATIC = Path(__file__).parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not settings.DEMO_MODE and not (settings.STAFF_PASSWORD and settings.ADMIN_PASSWORD and settings.WEBHOOK_SECRET):
-        raise RuntimeError("Set STAFF_PASSWORD, ADMIN_PASSWORD and WEBHOOK_SECRET in .env")
+    if not settings.DEMO_MODE and not (staff_accounts() and settings.ADMIN_PASSWORD and settings.WEBHOOK_SECRET):
+        raise RuntimeError("Set STAFF_USERS (or STAFF_PASSWORD), ADMIN_PASSWORD and WEBHOOK_SECRET in .env")
     init_db()
     if settings.DEMO_MODE:
         from .demo import seed_demo
@@ -36,6 +39,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Watch Trading Feed", lifespan=lifespan, docs_url=None, redoc_url=None)
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
 basic = HTTPBasic(auto_error=False)
 
 
@@ -49,16 +53,21 @@ def _deny():
 
 
 def is_admin(creds: Optional[HTTPBasicCredentials] = Depends(basic)):
-    if not creds or not _check(creds, settings.ADMIN_USER, settings.ADMIN_PASSWORD):
+    if not creds:
         _deny()
+    return live_is_admin(creds)
 
 
 def is_staff(creds: Optional[HTTPBasicCredentials] = Depends(basic)):
     if settings.DEMO_MODE:
-        return
-    if not creds or not (_check(creds, settings.STAFF_USER, settings.STAFF_PASSWORD)
-            or _check(creds, settings.ADMIN_USER, settings.ADMIN_PASSWORD)):
+        return "demo"
+    if not creds:
         _deny()
+    if _check(creds, settings.ADMIN_USER, settings.ADMIN_PASSWORD):
+        return creds.username
+    if any(_check(creds, username, password) for username, password in staff_accounts().items()):
+        return creds.username
+    _deny()
 
 
 # ------------------------------------------------------------------ webhook
@@ -75,9 +84,22 @@ async def waha_webhook(request: Request, token: str = ""):
     if not m:
         return {"ok": True}
     m = await ingest.resolve_phone(m)
+    return {"ok": True, **(await _ingest_one(m))}
+
+
+async def _ingest_one(m: dict) -> dict:
+    """Store an enabled-group message and any supported photo."""
     with SessionLocal() as s:
+        if not ingest.group_enabled(s, m["group_id"]):
+            return {"stored": False}
+        photo = await media.save_photo(s, m) if m.get("_media") else None
         stored = ingest.store(s, m)
-    return {"ok": True, "stored": bool(stored)}
+        if photo and not stored:
+            if photo.caption.strip():
+                media.link_backfilled_photo(s, photo, m["wa_id"], m["group_id"])
+            else:
+                media.link_late_photo(s, photo)
+    return {"stored": bool(stored), "photo": bool(photo)}
 
 
 @app.get("/health")
@@ -91,6 +113,26 @@ def feed_page():
     return FileResponse(STATIC / "index.html")
 
 
+@app.get("/advisor", dependencies=[Depends(is_staff)])
+def advisor_page():
+    return FileResponse(STATIC / "advisor.html")
+
+
+@app.get("/alerts", dependencies=[Depends(is_staff)])
+def alerts_page():
+    return FileResponse(STATIC / "alerts.html")
+
+
+@app.get("/dealers", dependencies=[Depends(is_staff)])
+def dealers_page():
+    return FileResponse(STATIC / "dealers.html")
+
+
+@app.get("/stock", dependencies=[Depends(is_staff)])
+def stock_page():
+    return FileResponse(STATIC / "stock.html")
+
+
 @app.get("/admin", dependencies=[Depends(is_admin)])
 def admin_page():
     return FileResponse(STATIC / "admin.html")
@@ -99,31 +141,52 @@ def admin_page():
 # ------------------------------------------------------------------ staff API
 PERIODS = {"6h": 0.25, "1d": 1, "3d": 3, "1w": 7, "2w": 14, "1m": 30, "3m": 90, "6m": 180, "all": None}
 SORTS = {"last_seen": Offer.last_seen_at, "first_seen": Offer.first_seen_at, "price": Offer.price_base,
-         "year": Offer.year, "seen_count": Offer.duplicate_count, "brand": Offer.brand}
+         "year": Offer.year, "seen_count": Offer.duplicate_count, "brand": Offer.brand, "deal": Offer.market_pct}
 
 
-def offer_json(o: Offer, groups: dict, include_message: Optional[str] = None) -> dict:
+def offer_json(o: Offer, groups: dict, ctx: Optional[dict] = None,
+               include_message: Optional[str] = None) -> dict:
+    ctx = ctx or {}
+    photo_id, photo_kind = o.photo_id, o.photo_kind
+    if not photo_id and o.reference_norm in ctx.get("ref_photos", {}):
+        photo_id, photo_kind = ctx["ref_photos"][o.reference_norm], "REFERENCE"
     return {
         "id": o.id, "direction": o.direction, "brand": o.brand, "family": o.family, "model": o.model,
-        "reference": o.reference, "dial_color": o.dial_color, "case_material": o.case_material,
-        "bracelet": o.bracelet, "diamond_indices": o.diamond_indices, "condition": o.condition,
-        "set_type": o.set_type, "year": o.year, "month": o.month, "price": o.price, "currency": o.currency,
-        "price_base": o.price_base, "base_currency": settings.BASE_CURRENCY, "discount_pct": o.discount_pct,
+        "reference": o.reference, "reference_norm": o.reference_norm, "dial_color": o.dial_color,
+        "case_material": o.case_material, "bracelet": o.bracelet, "diamond_indices": o.diamond_indices,
+        "condition": o.condition, "set_type": o.set_type, "year": o.year, "month": o.month,
+        "price": o.price, "currency": o.currency, "price_base": o.price_base,
+        "base_currency": settings.BASE_CURRENCY, "discount_pct": o.discount_pct,
         "country": o.country, "city": o.city, "notes": o.notes, "source_text": o.source_text,
-        "dealer_name": o.dealer_name, "dealer_phone": o.dealer_phone,
+        "dealer_name": o.dealer_name, "dealer_phone": o.dealer_phone, "dealer_key": o.dealer_key,
+        "dealer_rating": ctx.get("ratings", {}).get(o.dealer_key),
         "groups": [groups.get(g, g) for g in o.groups_seen.split(",") if g],
         "seen_count": o.duplicate_count,
         "first_seen_at": o.first_seen_at.isoformat() + "Z", "last_seen_at": o.last_seen_at.isoformat() + "Z",
+        "photo_id": photo_id, "photo_kind": photo_kind,
+        "market_pct": o.market_pct, "deal": market.deal_label(o.market_pct, settings.DEAL_THRESHOLD_PCT),
+        "in_stock": o.direction == "WTB" and o.reference_norm in ctx.get("stock", set()),
+        "track": {"status": o.track_status, "by": o.track_by, "note": o.track_note,
+                  "at": o.track_at.isoformat() + "Z" if o.track_at else None} if o.track_status else None,
         **({"original_message": include_message} if include_message is not None else {}),
     }
+
+
+def feed_ctx(s, rows: list) -> dict:
+    keys = {o.dealer_key for o in rows if o.dealer_key}
+    ratings = dict(s.execute(select(Dealer.key, Dealer.rating).where(Dealer.key.in_(keys))).all()) if keys else {}
+    need = {o.reference_norm for o in rows if not o.photo_id and o.reference_norm}
+    stock = set(s.scalars(select(StockItem.reference_norm).where(StockItem.status == "ACTIVE")).all())
+    return {"ratings": ratings, "ref_photos": media.reference_photos(s, need), "stock": stock}
 
 
 @app.get("/api/offers", dependencies=[Depends(is_staff)])
 def list_offers(q: str = "", direction: str = "", brand: str = "", condition: str = "", set_type: str = "",
                 country: str = "", group: str = "", period: str = "2w", min_price: Optional[float] = None,
                 max_price: Optional[float] = None, year_from: Optional[int] = None,
-                year_to: Optional[int] = None, priced_only: bool = False, sort: str = "last_seen",
-                order: str = "desc", page: int = 1, page_size: int = 50):
+                year_to: Optional[int] = None, priced_only: bool = False, deals_only: bool = False,
+                hide_handled: bool = False, show_blocked: bool = False, track: str = "",
+                sort: str = "last_seen", order: str = "desc", page: int = 1, page_size: int = 50):
     page_size = max(1, min(page_size, 200))
     stmt = select(Offer).where(Offer.archived.is_(False))
     days = PERIODS.get(period, 14)
@@ -151,6 +214,16 @@ def list_offers(q: str = "", direction: str = "", brand: str = "", condition: st
         stmt = stmt.where(Offer.year >= year_from)
     if year_to:
         stmt = stmt.where(Offer.year <= year_to)
+    if deals_only:
+        stmt = stmt.where(Offer.market_pct <= -settings.DEAL_THRESHOLD_PCT / 100,
+                          Offer.market_pct > market.SUSPECT_PCT)
+    if hide_handled:
+        stmt = stmt.where(Offer.track_status.is_(None))
+    if track:
+        stmt = stmt.where(Offer.track_status == track.upper())
+    if not show_blocked:
+        blocked = select(Dealer.key).where(Dealer.rating == "BLOCKED")
+        stmt = stmt.where(or_(Offer.dealer_key.is_(None), Offer.dealer_key.not_in(blocked)))
     for tok in q.split():
         like = f"%{tok}%"
         ref = worker.norm_ref(tok)
@@ -166,8 +239,9 @@ def list_offers(q: str = "", direction: str = "", brand: str = "", condition: st
         total = s.scalar(select(func.count()).select_from(stmt.subquery()))
         rows = s.scalars(stmt.order_by(*ordering).offset((page - 1) * page_size).limit(page_size)).all()
         groups = {g.id: g.name for g in s.scalars(select(Group)).all()}
+        ctx = feed_ctx(s, rows)
     return {"total": total, "page": page, "page_size": page_size,
-            "items": [offer_json(o, groups) for o in rows]}
+            "items": [offer_json(o, groups, ctx) for o in rows]}
 
 
 @app.get("/api/offers/{offer_id}", dependencies=[Depends(is_staff)])
@@ -178,7 +252,12 @@ def get_offer(offer_id: int):
             raise HTTPException(404)
         msg = s.get(Message, o.message_id)
         groups = {g.id: g.name for g in s.scalars(select(Group)).all()}
-        return offer_json(o, groups, include_message=msg.text if msg else "")
+        out = offer_json(o, groups, feed_ctx(s, [o]), include_message=msg.text if msg else "")
+        out["photos"] = [p.id for p in media.photos_near(s, o.photo_id)] if o.photo_id else (
+            [out["photo_id"]] if out["photo_id"] else [])
+        d = s.get(Dealer, o.dealer_key) if o.dealer_key else None
+        out["dealer_note"] = d.note if d else None
+        return out
 
 
 @app.get("/api/facets", dependencies=[Depends(is_staff)])
@@ -195,6 +274,93 @@ def facets():
     return {"brands": [b for b, _ in brands], "countries": [c for c, _ in countries],
             "groups": [{"id": g.id, "name": g.name} for g in groups],
             "base_currency": settings.BASE_CURRENCY}
+
+
+class AdviseIn(BaseModel):
+    reference: str
+    dial_color: Optional[str] = None
+    condition: Optional[str] = None
+    set_type: Optional[str] = None
+    year: Optional[int] = None
+    asking_price: Optional[float] = None
+    margin_pct: Optional[float] = None
+
+
+@app.get("/api/advise/config", dependencies=[Depends(is_staff)])
+def advise_config():
+    return {"margin_pct": settings.TARGET_MARGIN_PCT, "base_currency": settings.BASE_CURRENCY}
+
+
+@app.post("/api/advise", dependencies=[Depends(is_staff)])
+def advise(body: AdviseIn):
+    ref = worker.norm_ref(body.reference)
+    if not ref or len(ref) < 4:
+        raise HTTPException(400, "Enter a reference number, e.g. 126710BLNR")
+    since = utcnow() - timedelta(days=90)
+    blocked = select(Dealer.key).where(Dealer.rating == "BLOCKED")
+    base = select(Offer).where(Offer.archived.is_(False), Offer.last_seen_at >= since,
+                               or_(Offer.dealer_key.is_(None), Offer.dealer_key.not_in(blocked)))
+    broader = False
+    with SessionLocal() as s:
+        rows = s.scalars(base.where(Offer.reference_norm == ref)).all()
+        if sum(1 for o in rows if o.direction == "WTS" and o.price_base) < 3 and len(ref) > 6:
+            rows = s.scalars(base.where(Offer.reference_norm.startswith(ref[:6]))).all()
+            broader = True
+    if body.dial_color:
+        dial = body.dial_color.lower()
+        same = [o for o in rows if o.dial_color and dial in o.dial_color.lower()]
+        if sum(1 for o in same if o.direction == "WTS" and o.price_base) >= 3:
+            rows = same
+    comps = [{
+        "id": o.id, "direction": o.direction, "price_base": o.price_base, "price": o.price, "currency": o.currency,
+        "condition": o.condition, "set_type": o.set_type, "year": o.year, "country": o.country,
+        "dial_color": o.dial_color, "reference": o.reference, "last_seen_at": o.last_seen_at,
+        "dealer": o.dealer_phone or o.dealer_name, "dealer_name": o.dealer_name, "dealer_phone": o.dealer_phone,
+        "dealer_key": o.dealer_key,
+    } for o in rows]
+    res = advisor.analyse(body.model_dump(), comps, utcnow(),
+                          body.margin_pct if body.margin_pct is not None else settings.TARGET_MARGIN_PCT,
+                          settings.IMPORT_UPLIFT_PCT)
+    brand, family = refs.lookup(ref, None)
+    if not brand:
+        named = [o for o in rows if o.brand]
+        if named:
+            brand, family = named[0].brand, named[0].family
+    res["watch"] = {"reference": body.reference, "brand": brand, "family": family, "reference_norm": ref}
+    with SessionLocal() as s:
+        res["history"] = extra.history_for(s, ref)
+    res["broader_match"] = broader
+    for c in res["samples"]:
+        c["last_seen_at"] = c["last_seen_at"].isoformat() + "Z"
+        c["adjusted"] = round(c["adjusted"])
+    return res
+
+
+class ParseIn(BaseModel):
+    text: str
+
+
+@app.post("/api/advise/parse", dependencies=[Depends(is_staff)])
+async def advise_parse(body: ParseIn):
+    """Fill the advisor form from a customer's message."""
+    if settings.DEMO_MODE:
+        raise HTTPException(403, "Message parsing is disabled in demo mode")
+    try:
+        offers = await extract_offers(
+            body.text[:4000],
+            f"Private customer selling to us in the UK. Amounts with no currency symbol are {settings.BASE_CURRENCY}.",
+        )
+    except ParseError as e:
+        raise HTTPException(502, str(e))
+    cleaned = [o for o in (worker.clean_offer(x) for x in offers) if o]
+    if not cleaned:
+        raise HTTPException(422, "Couldn't find a watch in that message")
+    o = cleaned[0]
+    price_gbp = o["price"] if o["currency"] == settings.BASE_CURRENCY else o["price_base"]
+    return {"reference": o["reference"], "brand": o["brand"], "family": o["family"],
+            "dial_color": o["dial_color"], "condition": o["condition"], "set_type": o["set_type"],
+            "year": o["year"], "asking_price": round(price_gbp) if price_gbp else None,
+            "others": len(cleaned) - 1}
 
 
 # ------------------------------------------------------------------ admin API
@@ -284,22 +450,23 @@ class Backfill(BaseModel):
 @app.post("/admin/api/groups/backfill", dependencies=[Depends(is_admin)])
 async def admin_backfill(body: Backfill):
     try:
-        msgs = await waha.chat_messages(body.group_id, min(max(body.limit, 1), 2000))
+        msgs = await waha.chat_messages(body.group_id, min(max(body.limit, 1), 2000), download_media=True)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"Could not load history: {e}")
-    stored = 0
     with SessionLocal() as s:
         g = s.get(Group, body.group_id)
         if not g or not g.enabled:
             raise HTTPException(400, "Enable the group first")
-        for p in msgs:
-            m = ingest.normalize(p)
-            if not m:
-                continue
-            m = await ingest.resolve_phone(m)
-            if ingest.store(s, m):
-                stored += 1
-    return {"fetched": len(msgs), "stored": stored}
+    stored = photos = 0
+    for p in msgs:
+        m = ingest.normalize(p)
+        if not m:
+            continue
+        m = await ingest.resolve_phone(m)
+        result = await _ingest_one(m)
+        stored += result["stored"]
+        photos += result.get("photo", False)
+    return {"fetched": len(msgs), "stored": stored, "photos": photos}
 
 
 @app.get("/admin/api/stats", dependencies=[Depends(is_admin)])
@@ -332,6 +499,9 @@ def admin_retry():
         n = s.execute(update(Message).where(Message.status == "ERROR").values(status="NEW", attempts=0)).rowcount
         s.commit()
     return {"requeued": n}
+
+
+app.include_router(extra.router)
 
 
 @app.exception_handler(HTTPException)

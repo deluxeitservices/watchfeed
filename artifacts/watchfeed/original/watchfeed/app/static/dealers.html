@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dealers</title><link rel="stylesheet" href="/static/app.css">
+<style>.tablewrap table{min-width:820px}</style>
+</head>
+<body>
+<header class="top"><h1>Dealers</h1><nav class="nav"></nav><span class="spacer"></span><span class="user"></span></header>
+<main class="narrow">
+  <div class="row" style="margin-bottom:12px"><input type="search" id="q" placeholder="Search name, number or note…" style="flex:1;min-width:220px">
+    <select id="rating"><option value="">All ratings</option><option value="TRUSTED">✓ Trusted</option><option value="OK">OK</option><option value="CAUTION">⚠ Caution</option><option value="BLOCKED">⛔ Blocked</option></select>
+    <select id="sort"><option value="listings">Most active</option><option value="recent">Recently seen</option><option value="cheap">Cheapest vs market</option></select></div>
+  <p class="small muted">Activity from the last 90 days. Click a dealer to see listings, add a note or rate them.</p>
+  <div class="tablewrap"><table><thead><tr><th>Dealer</th><th>Rating</th><th>Listings</th><th>Selling / wanting</th><th>Prices vs others</th><th>Groups</th><th>Last seen</th><th>Note</th></tr></thead>
+    <tbody id="rows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody></table></div>
+</main>
+<script src="/static/common.js"></script>
+<script>
+renderNav("/dealers");
+async function load(){
+  const p=new URLSearchParams({q:$("q").value.trim(),rating:$("rating").value,sort:$("sort").value});
+  const list=await api("/api/dealers?"+p);
+  $("rows").innerHTML=list.map(d=>`<tr><td><button class="linkish" data-dealer="${esc(d.key)}"><b>${esc(d.name||"Unknown")}</b></button>
+    <div class="small">${d.phone?`<a href="https://wa.me/${esc(d.phone)}" target="_blank" rel="noopener">+${esc(d.phone)}</a>`:""}</div></td>
+    <td>${ratingBadge(d.rating)}</td><td>${d.listings}</td><td>${d.wts} / ${d.wtb}</td>
+    <td>${d.vs_market_pct==null?"":`<span class="${d.vs_market_pct < -3?"base":""}">${d.vs_market_pct>0?"+":""}${d.vs_market_pct}%</span>`}</td>
+    <td>${d.groups}</td><td class="small">${ago(d.last_seen_at)}</td><td class="small muted">${esc((d.note||"").slice(0,80))}</td></tr>`).join("")||`<tr><td colspan="8" class="empty">No dealers match.</td></tr>`;
+}
+isPreview().then(demo=>{if(demo){$("rows").innerHTML="<tr><td colspan='8' class='empty'>Dealer data is not available in demo preview.</td></tr>";return;}load().catch(e=>$("rows").innerHTML=`<tr><td colspan="8" class="err">${esc(e.message)}</td></tr>`);});
+let t;$("q").oninput=()=>{clearTimeout(t);t=setTimeout(()=>{if(!PREVIEW_MODE)load();},250);};
+$("rating").onchange=()=>{if(!PREVIEW_MODE)load();};$("sort").onchange=()=>{if(!PREVIEW_MODE)load();};
+document.addEventListener("offer-updated",()=>{if(!PREVIEW_MODE)load();});
+</script>
+</body>
+</html>

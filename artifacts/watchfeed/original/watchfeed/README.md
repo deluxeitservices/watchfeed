@@ -64,6 +64,36 @@ to the VPS and that the Apache site has a valid certificate before using the
 admin login. Cloudflare proxy may remain enabled if its origin and HTTPS
 settings are correct; test those after Apache is configured.
 
+### Upgrade an existing Apache-hosted Watchfeed to v2
+
+**Do not replace the VPS `.env`, run `docker compose down -v`, or copy the ZIP
+over the live installation.** Existing PostgreSQL data needs an additive schema
+upgrade before the new app starts. Keep the Apache override and the WhatsApp
+session volume in place:
+
+```bash
+cd /opt/watchfeed-repo/artifacts/watchfeed/original/watchfeed
+# Pull the reviewed code before continuing. Confirm compose.apache.yml is present.
+umask 077
+backup="$HOME/watchfeed-before-v2-$(date +%Y%m%d-%H%M%S).dump"
+docker compose -f docker-compose.yml -f compose.apache.yml exec -T db \
+  sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h 127.0.0.1 -U watchfeed -d watchfeed -Fc' \
+  > "$backup"
+test -s "$backup" || { echo "Backup failed; stop here"; exit 1; }
+docker compose -f docker-compose.yml -f compose.apache.yml build app
+docker compose -f docker-compose.yml -f compose.apache.yml run --rm --no-deps app python -m app.migrate_v2
+docker compose -f docker-compose.yml -f compose.apache.yml up -d --no-deps --force-recreate app
+curl -fsS http://127.0.0.1:18080/health
+docker compose -f docker-compose.yml -f compose.apache.yml ps app
+```
+
+The migration is repeatable and preserves existing offers and groups. Stop if
+the backup or migration fails. The `ps` output must include
+`127.0.0.1:18080->8000/tcp`: always use **both** Compose files when recreating
+the app, or Apache will return HTTP 503. New WAHA photo settings take effect
+only when the WAHA service is separately recreated. That briefly interrupts
+WhatsApp; plan it after the core app works, and be ready to relink if needed.
+
 ## 3. Connect WhatsApp and pick groups
 
 1. In **/admin**, click **Connect / show QR**.
@@ -73,6 +103,24 @@ settings are correct; test those after Apache is configured.
 5. Optional: click **Import last 300** on a group to pull in its recent history.
 
 New messages then flow in live. Give staff the STAFF_USER / STAFF_PASSWORD login for `https://feed.yourdomain.co.uk/`.
+
+## Additional staff tools in v2
+
+* `/advisor`: compare dealer asking prices and WTB demand for a reference;
+  suggested buy prices are estimates, not guaranteed sale prices.
+* `/dealers`: review dealer activity, ratings and notes; blocked dealers
+  disappear from the default feed.
+* `/alerts`: save feed filters and optionally send matching offers and daily
+  summaries through Telegram or email. Delivery requires setting the relevant
+  `.env` variables and recreating **only the app** using both Compose files.
+  Never put bot tokens or SMTP passwords in Git or chat.
+* `/stock`: record inventory and see matching WTB requests.
+* Feed photos, market comparisons and staff follow-up status appear when
+  enough data exists. WhatsApp remains read-only; configured Telegram/email
+  alerts **do** send notifications.
+
+Optional `STAFF_USERS` gives each team member an individual login; the existing
+`STAFF_USER` and `STAFF_PASSWORD` still work.
 
 ## 4. Staff feed
 

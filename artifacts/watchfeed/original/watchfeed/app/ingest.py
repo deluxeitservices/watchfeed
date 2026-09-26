@@ -31,7 +31,8 @@ def normalize(p: dict) -> Optional[dict]:
     if not str(chat).endswith("@g.us"):
         return None
     text = (p.get("body") or "").strip()
-    if not text or not p.get("id"):
+    media = p.get("media") if isinstance(p.get("media"), dict) else None
+    if not p.get("id") or not (text or (p.get("hasMedia") and media)):
         return None
     data = p.get("_data") if isinstance(p.get("_data"), dict) else {}
     key = data.get("key") if isinstance(data.get("key"), dict) else {}
@@ -57,6 +58,7 @@ def normalize(p: dict) -> Optional[dict]:
         "text": text,
         "has_media": bool(p.get("hasMedia")),
         "ts": ts,
+        "_media": media,
     }
 
 
@@ -67,16 +69,24 @@ async def resolve_phone(m: dict) -> dict:
     return m
 
 
-def store(s: Session, m: dict) -> Optional[Message]:
-    """Store message if its group is enabled. Returns Message or None (skipped/duplicate)."""
-    group = s.get(Group, m["group_id"])
+def group_enabled(s: Session, group_id: str) -> bool:
+    """Return whether this group may be ingested, creating unknown groups safely."""
+    group = s.get(Group, group_id)
     if group is None:
-        group = Group(id=m["group_id"], name=m["group_id"], enabled=settings.AUTO_ENABLE_NEW_GROUPS)
+        group = Group(id=group_id, name=group_id, enabled=settings.AUTO_ENABLE_NEW_GROUPS)
         s.add(group)
-        s.flush()
-    if not group.enabled:
         s.commit()
+    return bool(group.enabled)
+
+
+def store(s: Session, m: dict) -> Optional[Message]:
+    """Store a text message from an enabled group; leave transient media metadata out."""
+    m = {k: v for k, v in m.items() if not k.startswith("_")}
+    if not m.get("text"):
         return None
+    if not group_enabled(s, m["group_id"]):
+        return None
+    group = s.get(Group, m["group_id"])
     if s.scalar(select(Message.id).where(Message.wa_id == m["wa_id"])):
         return None
     msg = Message(text_hash=text_hash(m["text"]), **m)

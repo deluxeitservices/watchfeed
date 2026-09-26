@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buy Advisor</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  :root{--good:#0f7a4a;--goodbg:#e2f4ea;--mid:#9a6a00;--midbg:#fbf1d6;--bad:#b3401a;--badbg:#fbe4d9}
+  main.adv{max-width:1200px;margin:0 auto;padding:18px 20px 60px;display:grid;grid-template-columns:360px 1fr;gap:16px;align-items:start}
+  @media (max-width:900px){main.adv{grid-template-columns:1fr;padding:12px}}
+  .adv label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
+  .adv input,.adv select,.adv textarea{width:100%;padding:8px 10px}
+  .adv textarea{min-height:84px;resize:vertical}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  #go{width:100%;padding:10px;font-weight:600;margin-top:14px}
+  .verdict{border-radius:12px;padding:14px 16px;display:flex;gap:14px;align-items:center;margin-bottom:14px}
+  .verdict b{font-size:18px;display:block}
+  .v-STRONG,.v-GOOD,.a-BUY{background:var(--goodbg);color:var(--good)}
+  .v-AVERAGE,.a-NEGOTIATE{background:var(--midbg);color:var(--mid)}
+  .v-SLOW,.a-TOO_HIGH,.a-WALK_AWAY{background:var(--badbg);color:var(--bad)}
+  .v-NO_DATA{background:var(--chip);color:var(--ink)}
+  .dot{width:14px;height:14px;border-radius:50%;background:currentColor;flex:none}
+  .prices{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
+  @media (max-width:600px){.prices{grid-template-columns:1fr}}
+  .price{border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .price span{font-size:12px;color:var(--muted)} .price b{display:block;font-size:24px;margin-top:2px}
+  .price.main{border-color:var(--brand2);background:#f3faf6} .price.main b{color:var(--brand2)}
+  .ask{border-radius:10px;padding:10px 14px;margin-bottom:14px;font-weight:600}
+  ul.reasons{margin:0 0 14px;padding-left:18px} ul.reasons li{margin:3px 0}
+  .stats{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+  .tablewrap{overflow:auto} .adv table{border-collapse:collapse;width:100%;min-width:640px}
+  .adv th{font-size:11px;text-transform:uppercase;color:var(--muted);text-align:left;padding:8px;border-bottom:1px solid var(--line)}
+  .adv td{padding:8px;border-bottom:1px solid var(--line)}
+  .reference-warning{border:1px solid #9a6a00;border-left:5px solid #9a6a00;border-radius:10px;padding:12px 14px;margin-bottom:14px;background:#fbf1d6;color:#573d00}
+  .reference-warning strong{display:block;margin-bottom:4px}
+  .advisor-status{border-radius:10px;padding:12px 14px}
+  .disclaimer{font-size:12px;color:var(--muted);margin-top:12px}
+</style>
+</head>
+<body>
+<header class="top"><h1>Buy Advisor</h1><nav class="nav"></nav><span class="spacer"></span><span class="user"></span></header>
+<main class="adv">
+  <section class="card">
+    <h2>Customer's watch</h2>
+    <label for="msg">Paste customer's message (optional)</label>
+    <textarea id="msg" placeholder="e.g. Hi, selling my Rolex GMT Batman 126710BLNR, 2021, full set, looking for £13k"></textarea>
+    <button id="fill">Fill details from message</button><hr>
+    <label for="reference">Reference *</label><input id="reference" placeholder="126710BLNR" autocomplete="off">
+    <label for="dial_color">Dial colour</label><input id="dial_color" placeholder="optional, e.g. blue">
+    <div class="row2"><div><label for="condition">Condition</label><select id="condition"><option value="">Not sure</option><option value="NEW">New / unworn</option><option value="LIKE_NEW">Like new</option><option value="USED" selected>Pre-owned</option><option value="VINTAGE">Vintage</option></select></div>
+      <div><label for="set_type">Box &amp; papers</label><select id="set_type"><option value="">Not sure</option><option value="FULL_SET" selected>Full set</option><option value="PAPERS_ONLY">Papers only</option><option value="BOX_ONLY">Box only</option><option value="WATCH_ONLY">Watch only</option></select></div></div>
+    <div class="row2"><div><label for="year">Card year</label><input id="year" type="number" placeholder="2021"></div><div><label for="asking_price">Customer asking (£)</label><input id="asking_price" type="number" placeholder="optional"></div></div>
+    <label for="margin_pct">Our target margin: <b id="mval">10</b>%</label><input id="margin_pct" type="range" min="3" max="30" step="1" value="10">
+    <button class="primary" id="go">Get buy price</button><div class="err" id="err" role="alert" aria-live="polite"></div>
+  </section>
+  <section class="card" id="out" aria-busy="false"><div class="empty">Enter a reference and press <b>Get buy price</b>.<br><br>The advisor compares against dealer asking prices in your WhatsApp groups and suggests a buying range.</div></section>
+</main>
+<script src="/static/common.js"></script>
+<script>
+renderNav("/advisor");
+const moneyIn = (v, c) => money(v, c);
+async function post(path, body){ return api(path, "POST", body); }
+$("margin_pct").oninput = () => $("mval").textContent = $("margin_pct").value;
+isPreview().then(demo => {
+  if (demo) {
+    $("err").textContent = "Buy Advisor is disabled in demo preview; no live offers or dealer data are loaded.";
+    ["fill","go"].forEach(id => $(id).disabled = true);
+    return;
+  }
+  api("/api/advise/config").then(c => { BASE = c.base_currency || "GBP"; $("margin_pct").value = c.margin_pct; $("mval").textContent = c.margin_pct; }).catch(e => $("err").textContent = e.message);
+  const ref = new URLSearchParams(location.search).get("ref");
+  if (ref) { $("reference").value = ref; setTimeout(run, 50); }
+});
+$("fill").onclick = async () => {
+  if (await isPreview()) return;
+  const text = $("msg").value.trim(); if (!text) return;
+  $("fill").disabled = true; $("fill").textContent = "Reading message…"; $("err").textContent = "";
+  try {
+    const d = await post("/api/advise/parse", {text});
+    for (const k of ["reference","dial_color","condition","set_type","year","asking_price"]) if (d[k] != null && d[k] !== "") $(k).value = d[k];
+    if (d.others) $("err").textContent = `Message mentions ${d.others + 1} watches — filled the first one.`;
+  } catch (e) { $("err").textContent = e.message; }
+  finally { $("fill").disabled = false; $("fill").textContent = "Fill details from message"; }
+};
+$("go").onclick = run;
+$("reference").addEventListener("keydown", e => { if (e.key === "Enter") run(); });
+async function run(){
+  if (await isPreview()) { $("err").textContent = "Buy Advisor is disabled in demo preview."; return; }
+  const body = {};
+  for (const k of ["reference","dial_color","condition","set_type"]) body[k] = $(k).value.trim() || null;
+  for (const k of ["year","asking_price","margin_pct"]) body[k] = $(k).value ? Number($(k).value) : null;
+  if (!body.reference) { $("err").textContent = "Enter a reference number."; return; }
+  $("err").textContent = ""; $("go").disabled = true; $("go").textContent = "Checking market…";
+  $("out").setAttribute("aria-busy", "true");
+  $("out").innerHTML = `<p class="empty advisor-status" role="status">Checking the market for exact and related-reference offers…</p>`;
+  try { render(await post("/api/advise", body), body); }
+  catch (e) {
+    $("err").textContent = e.message || "Market check failed. Please try again.";
+    $("out").innerHTML = `<p class="empty advisor-status">No new estimate was loaded. Correct the details if needed and try again.</p>`;
+  }
+  finally {
+    $("out").setAttribute("aria-busy", "false");
+    $("go").disabled = false; $("go").textContent = "Get buy price";
+  }
+}
+function render(r, body){
+  const w = r.watch || {}, title = [w.brand,w.family].filter(Boolean).join(" ") || "Watch";
+  const spec = [body.dial_color && `${body.dial_color} dial`, COND[body.condition], SETS[body.set_type], body.year].filter(Boolean).join(" · ");
+  let h = `<h2>${esc(title)} <span class="muted">${esc(r.watch.reference)}</span></h2><p class="muted small">${esc(spec)}</p>
+    <div class="verdict v-${r.verdict}"><span class="dot"></span><div><b>${esc(r.verdict_label)}</b><span class="small">Based on ${r.comparables} dealer offers in the last ${r.window_days} days</span></div></div>`;
+  if (r.broader_match) h += `<div class="reference-warning" role="alert" aria-live="assertive"><strong>Related-reference comparison — use your judgement.</strong>There were not enough offers for an exact-reference comparison. This estimate uses offers with related references that share the first six characters of ${esc(w.reference || body.reference)}; they are not confirmed exact matches. Check each reference below and verify the watch specification yourself before relying on the suggested prices.</div>`;
+  if (r.offer != null) h += `<div class="prices"><div class="price main"><span>Offer the customer</span><b>${money(r.offer)}</b><span>${r.margin_pct}% margin</span></div><div class="price"><span>Maximum — don't go above</span><b>${money(r.max_price)}</b></div><div class="price"><span>We can resell quickly at</span><b>${money(r.quick_resale)}</b></div></div>`;
+  if (r.asking) h += `<div class="ask a-${r.asking.code}">Customer wants ${money(r.asking.price)}: ${esc(r.asking.message)}</div>`;
+  h += `<ul class="reasons">${(r.reasons||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`;
+  if (r.market_median != null) h += `<div class="stats"><span class="chip">Dealer asks: ${money(r.market_low)} – ${money(r.market_high)}</span><span class="chip">Typical ask ${money(r.market_median)}</span><span class="chip">${r.wts_count_30d} dealers selling · ${r.wtb_count_30d} wanting (30d)</span></div>`;
+  if ((r.samples||[]).length) h += `<h2>Comparable dealer offers</h2><div class="tablewrap"><table><thead><tr><th>Reference</th><th>Seen</th><th>Dealer</th><th>Condition</th><th>Set</th><th>Year</th><th>Their price</th><th>Adjusted</th><th>Where</th></tr></thead><tbody>${r.samples.map(c=>`<tr><td>${esc(c.reference||"Not recorded")}</td><td>${new Date(c.last_seen_at).toLocaleDateString("en-GB")}</td><td>${esc(c.dealer_name||"")}</td><td>${esc(COND[c.condition]||"")}</td><td>${esc(SETS[c.set_type]||"")}</td><td>${esc(c.year||"")}</td><td>${c.price!=null?esc(moneyIn(c.price,c.currency)):""}</td><td><b>${money(c.adjusted)}</b></td><td>${flag(c.country)} ${esc(c.country||"")}</td></tr>`).join("")}</tbody></table></div>`;
+  if (r.history) h += `<h2 style="margin-top:14px">Typical dealer asking price, last 6 months</h2><div id="advchart"></div>`;
+  h += `<p class="disclaimer">Guide only: dealer asking prices, not confirmed sale prices. Check condition, serial, papers and authenticity before paying.</p>`;
+  $("out").innerHTML = h;
+  if (r.history) priceChart($("advchart"), r.history);
+}
+</script>
+</body>
+</html>

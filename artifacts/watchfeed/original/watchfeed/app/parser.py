@@ -23,7 +23,7 @@ _KEYWORDS = re.compile(
     re.I,
 )
 _REF = re.compile(r"\b\d{4,6}[a-z]{0,6}\b|\b[a-z]{1,4}[\-\s]?\d{2,}[a-z0-9\.\-]*\b", re.I)
-_PRICE = re.compile(r"[$£€¥]|\d+(?:[.,]\d+)?\s?k\b|\d{2,3}[,.]\d{3}", re.I)
+_PRICE = re.compile(r"[$£€¥]|\d+(?:[.,]\d+)?\s?[km]\b|\b\d{1,3}(?:[,.]\d{3})+\b", re.I)
 
 
 def looks_like_offer(text: str) -> bool:
@@ -86,7 +86,9 @@ Currency written in a header applies to all lines below it.
 - notes: short extra info worth keeping (e.g. "tag attached", "stickers", "sold out", "can deliver London").
 - source_text: the exact line(s) from the message that describe this offer, copied verbatim.
 
-Shared context (brand headers, flags, currency, condition, "all full set", "all 2024") applies to every line under it.
+Shared context applies to every line under it ONLY when written as a header/footer line on its own (brand headers, \
+flags, "all HKD", "all full set", "all 2024", "prices in USD"). A condition, set or year written on one watch's line \
+belongs to that line only — never copy it to the next watch. If a line does not state condition or set, leave it null.
 Keep one offer per line even if lines repeat the same reference with different dials/prices.
 Output only via the tool."""
 

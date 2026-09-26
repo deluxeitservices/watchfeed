@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (Boolean, DateTime, Float, ForeignKey, Index, Integer,
-                        String, Text, create_engine)
+                         String, Text, create_engine, inspect)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import settings
@@ -87,6 +87,14 @@ class Offer(Base):
 
     dealer_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     dealer_phone: Mapped[Optional[str]] = mapped_column(String(40), index=True, nullable=True)
+    dealer_key: Mapped[Optional[str]] = mapped_column(String(200), index=True, nullable=True)
+    photo_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    photo_kind: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    market_pct: Mapped[Optional[float]] = mapped_column(Float, index=True, nullable=True)
+    track_status: Mapped[Optional[str]] = mapped_column(String(12), nullable=True)
+    track_by: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    track_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    track_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     fingerprint: Mapped[str] = mapped_column(String(64), index=True)
     duplicate_count: Mapped[int] = mapped_column(Integer, default=1)
@@ -96,6 +104,75 @@ class Offer(Base):
 
 
 Index("ix_offers_dir_seen", Offer.direction, Offer.last_seen_at)
+
+
+class Photo(Base):
+    __tablename__ = "photos"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    wa_id: Mapped[str] = mapped_column(String(200), index=True)
+    group_id: Mapped[str] = mapped_column(String(80), index=True)
+    sender_key: Mapped[Optional[str]] = mapped_column(String(200), index=True, nullable=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, index=True)
+    file: Mapped[str] = mapped_column(String(200))
+    thumb: Mapped[str] = mapped_column(String(200))
+    caption: Mapped[str] = mapped_column(Text, default="")
+    reference_norm: Mapped[Optional[str]] = mapped_column(String(80), index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Dealer(Base):
+    __tablename__ = "dealers"
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    rating: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_by: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120))
+    query_json: Mapped[str] = mapped_column(Text)
+    emails: Mapped[str] = mapped_column(Text, default="")
+    telegram: Mapped[bool] = mapped_column(Boolean, default=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_hit_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AlertHit(Base):
+    __tablename__ = "alert_hits"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    alert_id: Mapped[int] = mapped_column(Integer, index=True)
+    offer_id: Mapped[int] = mapped_column(Integer, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class StockItem(Base):
+    __tablename__ = "stock"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    reference: Mapped[str] = mapped_column(String(80))
+    reference_norm: Mapped[str] = mapped_column(String(80), index=True)
+    description: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    condition: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    set_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    asking_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(10), default="ACTIVE")
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_by: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class KV(Base):
+    __tablename__ = "kv"
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
 
 _is_sqlite = settings.DATABASE_URL.startswith("sqlite")
 engine = create_engine(
@@ -108,3 +185,12 @@ SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    # Never silently run schema migrations against the live PostgreSQL database.
+    required = {"dealer_key", "photo_id", "photo_kind", "market_pct",
+                "track_status", "track_by", "track_at", "track_note"}
+    missing = required - {c["name"] for c in inspect(engine).get_columns("offers")}
+    if missing:
+        raise RuntimeError(
+            "Existing database needs the additive upgrade. Back it up, then run "
+            "'python -m app.migrate_v2' before starting the new app."
+        )

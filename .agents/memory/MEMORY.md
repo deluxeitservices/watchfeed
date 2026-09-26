@@ -1,1 +1,2 @@
 - [GitHub shell authentication](github-shell-auth.md) — connector repository permissions and Replit Shell Git credentials are separate; a working connector does not prove CLI push works.
+- [Alert queue limits](alert-queue-limits.md) — filter pending, due notification jobs before applying a batch cap; completed markers can otherwise starve delivery.
