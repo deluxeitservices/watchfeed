@@ -1,0 +1,131 @@
+[ec2-user@ip-172-31-40-42 watchfeed]$ cd /opt/watchfeed-repo/artifacts/watchfeed/original/watchfeed
+
+# Sirf on/off batata hai; API key print nahi karta
+docker compose -f docker-compose.yml -f compose.apache.yml exec -T app \
+  python -c 'from app.config import settings; print("worker_enabled:", settings.WORKER_ENABLED, "ai_key_configured:", bool(settings.ANTHROPIC_API_KEY))'
+
+# Queue kitni purani hai aur errors kis qisam ke hain?
+docker compose -f docker-compose.yml -f compose.apache.yml exec -T db \
+  sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U watchfeed -d watchfeed' <<'SQL'
+SELECT COUNT(*) AS waiting, MIN(ts) AS oldest_waiting, MAX(ts) AS newest_waiting
+FROM messages WHERE status = 'NEW';
+SELECT LEFT(COALESCE(error, 'unknown'), 100) AS reason, COUNT(*)
+FROM messages WHERE status = 'ERROR'
+GROUP BY 1 ORDER BY 2 DESC LIMIT 10;
+SQL
+
+# Worker/API ki recent errors
+docker compose -f docker-compose.yml -f compose.apache.yml logs --since=30m --tail=100 app
+worker_enabled: True ai_key_configured: True
+ waiting |   oldest_waiting    |   newest_waiting
+---------+---------------------+---------------------
+    1578 | 2026-09-26 06:59:34 | 2026-09-26 16:29:41
+(1 row)
+
+                                                reason                                                | count
+------------------------------------------------------------------------------------------------------+-------
+ LLM HTTP 400: {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance |   419
+ message too long for one extraction                                                                  |     3
+(2 rows)
+
+app-1  | INFO:     172.18.0.1:43632 - "GET /api/offers?period=2w&sort=last_seen&order=desc&page=1&page_size=50 HTTP/1.1" 200 OK
+app-1  | 2026-09-26 16:27:42,710 INFO httpx: HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+app-1  | INFO:     172.18.0.1:43632 - "GET /api/offers?period=2w&sort=last_seen&order=desc&page=1&page_size=50 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:59240 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | 2026-09-26 16:27:46,912 INFO httpx: HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+app-1  | INFO:     172.18.0.1:43632 - "GET /admin/api/stats HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:59240 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:55776 - "GET /api/me HTTP/1.1" 200 OK
+app-1  | 2026-09-26 16:27:50,645 INFO httpx: HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+app-1  | INFO:     172.18.0.1:55776 - "GET /stock HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:55776 - "GET /static/app.css HTTP/1.1" 304 Not Modified
+app-1  | INFO:     172.18.0.1:55776 - "GET /static/common.js HTTP/1.1" 304 Not Modified
+app-1  | INFO:     172.18.0.1:55776 - "GET /health HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:55776 - "GET /api/me HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:55784 - "GET /api/stock?status=ACTIVE HTTP/1.1" 200 OK
+app-1  | 2026-09-26 16:27:53,543 INFO httpx: HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+app-1  | INFO:     172.18.0.3:35072 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:55784 - "GET / HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:55784 - "GET /health HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:55776 - "GET /api/me HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:55784 - "GET /api/facets HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:55794 - "GET /api/me HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:55784 - "GET /api/offers?period=2w&sort=last_seen&order=desc&page=1&page_size=50 HTTP/1.1" 200 OK
+app-1  | 2026-09-26 16:27:59,611 INFO httpx: HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+app-1  | INFO:     172.18.0.1:55784 - "GET /api/me HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:55784 - "GET /api/me HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:33380 - "GET /api/me HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:32926 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:32926 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:42118 - "GET / HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:42118 - "GET /health HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:42128 - "GET /api/me HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:42118 - "GET /api/facets HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:42128 - "GET /api/me HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:42128 - "GET /api/offers?period=2w&sort=last_seen&order=desc&page=1&page_size=50 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:32926 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:32926 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:43254 - "GET /admin/api/stats HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:43254 - "GET /api/offers?q=1&period=2w&sort=last_seen&order=desc&page=1&page_size=50 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:48268 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:43254 - "GET /api/offers?q=124300&period=2w&sort=last_seen&order=desc&page=1&page_size=50 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:47618 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | 2026-09-26 16:28:37,184 INFO httpx: HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+app-1  | INFO:     172.18.0.3:36838 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | 2026-09-26 16:28:37,657 INFO httpx: HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 200 OK"
+app-1  | INFO:     172.18.0.3:36838 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:36838 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:36838 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:41360 - "GET /admin/api/stats HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:34490 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:34490 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:41366 - "GET /dealers HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:41366 - "GET /static/app.css HTTP/1.1" 304 Not Modified
+app-1  | INFO:     172.18.0.1:41382 - "GET /static/common.js HTTP/1.1" 304 Not Modified
+app-1  | INFO:     172.18.0.1:41382 - "GET /health HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:41382 - "GET /api/me HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:41366 - "GET /api/dealers?q=&rating=&sort=listings HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:56202 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:51456 - "GET /alerts HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:51456 - "GET /health HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:51472 - "GET /api/alerts HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:51456 - "GET /api/me HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:56202 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:56922 - "GET /advisor HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:56922 - "GET /health HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:56922 - "GET /api/advise/config HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:56930 - "GET /api/me HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:53330 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:56946 - "POST /api/advise HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:58656 - "GET / HTTP/1.1" 401 Unauthorized
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:34292 - "POST /api/advise HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.1:49976 - "POST /api/advise HTTP/1.1" 200 OK
+app-1  | INFO:     172.18.0.3:42184 - "POST /webhook/waha?token=1ddbee41d8c6fd555c885995273a000883d9b4621f5f8669 HTTP/1.1" 200 OK
+[ec2-user@ip-172-31-40-42 watchfeed]$
