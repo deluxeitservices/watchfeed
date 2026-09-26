@@ -39,6 +39,8 @@
 renderNav("/");
 let state={page:1,sort:"last_seen",order:"desc",total:0,pageSize:50,direction:""};
 let latestLoad=0, autoLoadRunning=false, isAdminViewer=false, autoEnabled=false;
+const AUTO_REFRESH_MS=60*60*1000;
+let nextAutoRefreshAt=Date.now()+AUTO_REFRESH_MS;
 const FILTERS=["period","brand","condition","set_type","country","group","min_price","max_price","year_from"], CHECKS=["deals_only","priced_only","hide_handled","show_blocked"];
 function params(){const p=new URLSearchParams(),v=id=>$(id).value.trim();if(v("q"))p.set("q",v("q"));if(state.direction)p.set("direction",state.direction);
   FILTERS.forEach(k=>{if(v(k))p.set(k,v(k));});CHECKS.forEach(k=>{if($(k).checked)p.set(k,"true");});
@@ -59,6 +61,7 @@ function row(o){
 }
 async function load(){const request=++latestLoad;try{const d=await api("/api/offers?"+params());if(request!==latestLoad)return;state.total=d.total;$("rows").innerHTML=d.items.map(row).join("");$("empty").hidden=d.items.length>0;
   $("count").textContent=`${d.total.toLocaleString("en-GB")} offers`;const start=d.total?(state.page-1)*state.pageSize+1:0;$("range").textContent=`${start}–${Math.min(state.page*state.pageSize,d.total)} of ${d.total}`;
+  nextAutoRefreshAt=Date.now()+AUTO_REFRESH_MS;
   $("prev").disabled=state.page<=1;$("next").disabled=state.page*state.pageSize>=d.total;$("updated").textContent=PREVIEW_MODE?"Sample data":"Feed checked "+new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
 }catch(e){if(request===latestLoad){$("count").textContent="Error loading offers: "+e.message;$("updated").textContent="Refresh failed";}}}
 async function loadFacets(){const f=await api("/api/facets");BASE=f.base_currency; $("basehead").textContent=`Price ${BASE}`;$("min_price").placeholder=`Min ${BASE}`;$("max_price").placeholder=`Max ${BASE}`;
@@ -77,22 +80,29 @@ async function syncRefreshSetting(){
   try{
     const me=await api("/api/me");
     isAdminViewer=!!me.is_admin;
+    const wasEnabled=autoEnabled;
     autoEnabled=isAdminViewer&&!!me.feed_auto_refresh;
+    if(autoEnabled&&!wasEnabled)nextAutoRefreshAt=Date.now()+AUTO_REFRESH_MS;
     $("refresh-mode").hidden=!isAdminViewer;
-    if(isAdminViewer)$("refresh-mode").textContent=autoEnabled?"Auto-refresh on (15s)":"Auto-refresh off";
+    if(isAdminViewer)$("refresh-mode").textContent=autoEnabled?"Auto-refresh on (hourly)":"Auto-refresh off";
   }catch(e){autoEnabled=false;$("refresh-mode").hidden=true;}
 }
 async function autoRefresh(){
-  if(autoLoadRunning||!autoEnabled||document.hidden||($("modal")&&$("modal").open))return;
+  if(autoLoadRunning||!autoEnabled||document.hidden||Date.now()<nextAutoRefreshAt||($("modal")&&$("modal").open))return;
   autoLoadRunning=true;
+  nextAutoRefreshAt=Date.now()+AUTO_REFRESH_MS;
   try{await load();}finally{autoLoadRunning=false;}
 }
-setInterval(autoRefresh,15000);
+// The timer checks whether an hour has passed; it makes no feed request until due.
+setInterval(autoRefresh,60000);
 setInterval(()=>{if(isAdminViewer&&!document.hidden)syncRefreshSetting();},60000);
 async function resumeRefresh(){if(document.hidden)return;if(isAdminViewer)await syncRefreshSetting();autoRefresh();}
 document.addEventListener("visibilitychange",()=>{if(!document.hidden)resumeRefresh();});
 window.addEventListener("focus",resumeRefresh);
-$("refresh-now").addEventListener("click",load);
+$("refresh-now").addEventListener("click",async()=>{
+  const button=$("refresh-now");button.disabled=true;button.textContent="Refreshing…";
+  try{await load();}finally{button.disabled=false;button.textContent="Refresh now";}
+});
 previewReady.then(demo=>{if(!demo)syncRefreshSetting();});
 const offer=new URLSearchParams(location.search).get("offer");if(offer)isPreview().then(demo=>{if(!demo)openOffer(offer);});
 loadFacets().catch(()=>{}).finally(load);

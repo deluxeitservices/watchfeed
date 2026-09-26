@@ -122,8 +122,9 @@ New messages then flow in live. Give staff the STAFF_USER / STAFF_PASSWORD login
 Optional `STAFF_USERS` gives each team member an individual login; the existing
 `STAFF_USER` and `STAFF_PASSWORD` still work.
 
-The admin page has a **Feed auto-refresh** switch (off by default). It applies
-only to the admin's market feed; staff use **Refresh now** instead. This switch
+The admin page has a **Feed auto-refresh** switch (off by default). When enabled,
+the admin's market feed checks for updates once an hour; staff use **Refresh now**
+instead. Anyone can use **Refresh now** for an immediate check. This switch
 does not pause WhatsApp ingestion or AI parsing, and changing it does not affect
 Anthropic API charges.
 
