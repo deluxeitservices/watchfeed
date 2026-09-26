@@ -165,7 +165,9 @@ async def process_batch(limit: int = 25) -> tuple:
     """Returns (processed, errors)."""
     with SessionLocal() as s:
         msgs = s.scalars(select(Message).where(Message.status == "NEW")
-                         .order_by(Message.ts).limit(limit)).all()
+                         # Prioritize current offers when an older backlog exists.
+                         # Older NEW messages remain stored and are processed later.
+                         .order_by(Message.ts.desc(), Message.id.desc()).limit(limit)).all()
         names = {g.id: g.name for g in s.scalars(select(Group)).all()}
     if not msgs:
         return 0, 0

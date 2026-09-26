@@ -140,6 +140,36 @@ def test_worker_parses_dedupes_and_caches(client):
     assert gmt["currency"] == "HKD" and 10000 < gmt["price_base"] < 15000
     assert by["5711/1A"]["country"] == "HK" and by["5711/1A"]["condition"] == "USED"
 
+
+def test_worker_processes_newest_pending_messages_first(monkeypatch):
+    from datetime import datetime
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.db import Base
+
+    isolated_engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                                    poolclass=StaticPool)
+    Base.metadata.create_all(isolated_engine)
+    sessions = sessionmaker(bind=isolated_engine, expire_on_commit=False)
+    monkeypatch.setattr(worker, "SessionLocal", sessions)
+    try:
+        with sessions() as s:
+            for wa_id, ts in (("old", datetime(2026, 9, 25, 12)),
+                              ("new-a", datetime(2026, 9, 26, 12)),
+                              ("new-b", datetime(2026, 9, 26, 12))):
+                s.add(Message(wa_id=wa_id, group_id=G1, text="thanks", text_hash=wa_id, ts=ts))
+            s.commit()
+
+        for expected in ("new-b", "new-a", "old"):
+            assert asyncio.run(worker.process_batch(limit=1)) == (1, 0)
+            with sessions() as s:
+                assert s.query(Message).filter_by(wa_id=expected).one().status == "SKIPPED"
+    finally:
+        isolated_engine.dispose()
+
 def test_search_filters(client):
     q = lambda **p: client.get("/api/offers", headers=STAFF, params=p).json()["total"]
     assert q(q="126710 blnr") == 1

@@ -128,6 +128,11 @@ instead. Anyone can use **Refresh now** for an immediate check. This switch
 does not pause WhatsApp ingestion or AI parsing, and changing it does not affect
 Anthropic API charges.
 
+When there is a backlog of unparsed WhatsApp messages, the worker processes
+the newest messages first so recent offers appear sooner. Older pending
+messages remain in the database and are processed later; AI usage charges
+still apply as messages are parsed.
+
 ## 4. Staff feed
 
 * **Search** looks across references, models, dial, dealer name and phone and the raw text. `126710 blnr`, `5711`, `daytona panda` and `+852` all work.
