@@ -63,8 +63,10 @@ def payload(i, chat, body, sender="447700900001@s.whatsapp.net", name="Ali HK", 
 
 @pytest.fixture(scope="module")
 def client():
-    parser_orig = worker.extract_offers
-    worker.extract_offers = fake_extract
+    parser_orig = worker.extract_offers_batch
+    async def fake_batch(items, client=None, group_weights=None):
+        return {item["id"]: await fake_extract(item["text"]) for item in items}
+    worker.extract_offers_batch = fake_batch
     async def fake_groups():
         return [{"id": G1, "name": "HK Dealers", "participants": 200},
                 {"id": G2, "name": "Dubai Watches", "participants": 90},
@@ -77,7 +79,7 @@ def client():
     waha.chat_messages = fake_hist
     with TestClient(main.app) as c:
         yield c
-    worker.extract_offers = parser_orig
+    worker.extract_offers_batch = parser_orig
 
 def test_auth(client):
     assert client.get("/").status_code == 401
@@ -170,6 +172,53 @@ def test_worker_processes_newest_pending_messages_first(monkeypatch):
     finally:
         isolated_engine.dispose()
 
+
+def test_worker_batches_distinct_groups_and_reuses_cache(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.db import Base, Group, ParseCache
+
+    isolated_engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                                    poolclass=StaticPool)
+    Base.metadata.create_all(isolated_engine)
+    sessions = sessionmaker(bind=isolated_engine, expire_on_commit=False)
+    monkeypatch.setattr(worker, "SessionLocal", sessions)
+    calls_made = []
+
+    async def fake_batch(items, client=None, group_weights=None):
+        calls_made.append((list(items), dict(group_weights)))
+        return {item["id"]: [] for item in items}
+
+    monkeypatch.setattr(worker, "extract_offers_batch", fake_batch)
+    try:
+        with sessions() as s:
+            s.add_all([Group(id=G1, name="HK"), Group(id=G2, name="Dubai")])
+            for wa_id, group, text, text_hash in (
+                ("a", G1, "WTS Rolex 126710BLNR", "shared"),
+                ("b", G2, "WTS Rolex 126710BLNR", "shared"),
+                ("c", G2, "WTB AP 15510ST", "different"),
+                ("d", G1, "job offer £20k", "chat"),
+            ):
+                s.add(Message(wa_id=wa_id, group_id=group, text=text,
+                              text_hash=text_hash, ts=utcnow()))
+            s.commit()
+        assert asyncio.run(worker.process_batch()) == (4, 0)
+        assert len(calls_made) == 1
+        assert len(calls_made[0][0]) == 2
+        assert set(calls_made[0][1]) == {G1, G2}
+        with sessions() as s:
+            assert {m.wa_id: m.status for m in s.query(Message)} == {
+                "a": "NO_OFFERS", "b": "NO_OFFERS", "c": "NO_OFFERS", "d": "SKIPPED"}
+            assert s.query(ParseCache).count() == 2
+            s.add(Message(wa_id="e", group_id=G1, text="WTB AP 15510ST",
+                          text_hash="different", ts=utcnow()))
+            s.commit()
+        assert asyncio.run(worker.process_batch()) == (1, 0)
+        assert len(calls_made) == 1
+    finally:
+        isolated_engine.dispose()
+
 def test_search_filters(client):
     q = lambda **p: client.get("/api/offers", headers=STAFF, params=p).json()["total"]
     assert q(q="126710 blnr") == 1
@@ -196,8 +245,12 @@ def test_backfill(client):
     assert s["messages_by_status"]["SKIPPED"] == 2 and s["offers_total"] == 3
 
 def test_prefilter():
-    yes = ["WTB 126500LN", "5711 hkd 1.2m", "RM 67-01 available", "AP 15510 blue fs", "Daytona panda new card 180k"]
-    no = ["ok", "thanks bro 🙏", "good morning all", "who is in HK next week?", "😂😂"]
+    yes = ["WTB 126500LN", "5711 hkd 1.2m", "RM 67-01 available", "AP 15510 blue fs",
+           "Daytona panda new card 180k", "126710BLNR", "🇦🇪 Patek 5711/1A 2019 used",
+           "Omega Speedmaster full set"]
+    no = ["ok", "thanks bro 🙏", "good morning all", "who is in HK next week?", "😂😂",
+          "selling my car for $500", "need a room for 2024", "available tomorrow at 3",
+          "job offer USD 10k", "WTS", "the 2024 sales forecast is ready"]
     assert all(parser.looks_like_offer(t) for t in yes), [t for t in yes if not parser.looks_like_offer(t)]
     assert not any(parser.looks_like_offer(t) for t in no), [t for t in no if parser.looks_like_offer(t)]
 
@@ -568,3 +621,137 @@ def test_v2_migration_preserves_v1_data_on_temporary_database():
         } <= columns
         assert saved == ("4477009", "Dealer", "4477009")
         assert {"photos", "dealers", "alerts", "alert_hits", "stock", "kv"} <= tables
+
+
+def test_ai_meter_batch_attribution_and_admin_access(client, monkeypatch):
+    from decimal import Decimal
+    from app.db import AIUsage, AIUsageGroup
+
+    monkeypatch.setattr(parser.settings, "ANTHROPIC_API_KEY", "test-only")
+    items = [{"id": "1", "group": "HK Dealers", "text": "WTS Rolex 126710BLNR 2024"},
+             {"id": "2", "group": "Dubai Watches", "text": "WTB AP 15510ST"}]
+
+    def answer(request):
+        sent = __import__("json").loads(request.content)
+        assert sent["tool_choice"]["name"] == "record_batch"
+        assert sent["messages"][0]["content"].count("Message id:") == 2
+        return _httpx.Response(200, json={
+            "model": "claude-haiku-4-5-20251001", "usage": {
+                "input_tokens": 1000, "output_tokens": 200,
+                "cache_creation_input_tokens": 100, "cache_read_input_tokens": 50},
+            "stop_reason": "tool_use", "content": [{"type": "tool_use", "name": "record_batch",
+                "input": {"messages": [
+                    {"id": "1", "offers": [{"direction": "WTS", "reference": "126710BLNR",
+                                           "source_text": items[0]["text"]}]},
+                    {"id": "2", "offers": []},
+                ]}}],
+        })
+
+    async def run():
+        async with _httpx.AsyncClient(transport=_httpx.MockTransport(answer)) as ai_client:
+            return await parser.extract_offers_batch(items, ai_client, {G1: 3, G2: 1})
+
+    parsed = asyncio.run(run())
+    assert parsed["1"][0]["reference"] == "126710BLNR" and parsed["2"] == []
+    with SessionLocal() as s:
+        usage = s.query(AIUsage).order_by(AIUsage.id.desc()).first()
+        allocations = s.query(AIUsageGroup).filter_by(usage_id=usage.id).all()
+        assert usage.message_count == 2
+        assert usage.estimated_usd == Decimal("0.00213000")
+        assert sum((entry.estimated_usd for entry in allocations), Decimal("0")) == usage.estimated_usd
+        assert {entry.group_id for entry in allocations} == {G1, G2}
+    assert client.get("/admin/api/ai-usage", headers=STAFF).status_code == 401
+    result = client.get("/admin/api/ai-usage", headers=ADMIN).json()
+    assert result["windows"]["24h"]["estimated_usd"] >= .00213
+    assert result["windows"]["7d"]["requests"] >= 1
+    assert {group["id"] for group in result["groups_7d"]} >= {G1, G2}
+
+
+def test_batch_invalid_response_is_metered_and_split(client, monkeypatch):
+    from app.db import AIUsage
+
+    monkeypatch.setattr(parser.settings, "ANTHROPIC_API_KEY", "test-only")
+    monkeypatch.setattr(worker, "extract_offers_batch", parser.extract_offers_batch)
+    seen = []
+
+    def answer(request):
+        sent = __import__("json").loads(request.content)
+        content = sent["messages"][0]["content"]
+        ids = __import__("re").findall(r"Message id: (\d+)", content)
+        seen.append(ids)
+        # Multi-message output is truncated and billable; single-message retries succeed.
+        truncated = len(ids) > 1
+        return _httpx.Response(200, json={
+            "model": "claude-haiku-4-5-20251001",
+            "usage": {"input_tokens": 50, "output_tokens": 10},
+            "stop_reason": "max_tokens" if truncated else "tool_use",
+            "content": [] if truncated else [{"type": "tool_use", "name": "record_batch",
+                "input": {"messages": [{"id": ids[0], "offers": []}]}}],
+        })
+
+    async def run():
+        async with _httpx.AsyncClient(transport=_httpx.MockTransport(answer)) as ai_client:
+            messages = [Message(id=i, group_id=group, text=f"WTS Rolex {i} 126710BLNR",
+                                text_hash=str(i), wa_id=str(i), ts=utcnow())
+                        for i, group in ((1, G1), (2, G2))]
+            return await worker._parse_chunk(messages, {G1: "HK", G2: "Dubai"},
+                                             {"1": {G1}, "2": {G2}}, ai_client,
+                                             asyncio.Semaphore(2))
+
+    with SessionLocal() as s:
+        before = s.query(AIUsage).count()
+    result = asyncio.run(run())
+    assert result == {"1": ("OK", []), "2": ("OK", [])}
+    assert seen == [["1", "2"], ["1"], ["2"]]
+    with SessionLocal() as s:
+        assert s.query(AIUsage).count() - before == 3  # includes the paid truncated response
+
+
+def test_bad_batch_mapping_counts_usage_and_rejects_misassigned_offer(client, monkeypatch):
+    from app.db import AIUsage
+    monkeypatch.setattr(parser.settings, "ANTHROPIC_API_KEY", "test-only")
+    items = [{"id": "11", "group": "HK", "text": "Rolex 126710BLNR"},
+             {"id": "12", "group": "Dubai", "text": "AP 15510ST"}]
+
+    def wrong_id(request):
+        return _httpx.Response(200, json={
+            "model": "claude-haiku-4-5-20251001",
+            "usage": {"input_tokens": 100, "output_tokens": 20},
+            "stop_reason": "tool_use", "content": [{"type": "tool_use",
+                "name": "record_batch", "input": {"messages": [
+                    {"id": "11", "offers": []}, {"id": "99", "offers": []}]}}],
+        })
+
+    async def run():
+        async with _httpx.AsyncClient(transport=_httpx.MockTransport(wrong_id)) as ai_client:
+            return await parser.extract_offers_batch(items, ai_client, {G1: 1, G2: 1})
+
+    with SessionLocal() as s:
+        before = s.query(AIUsage).count()
+    with pytest.raises(parser.InvalidBatch):
+        asyncio.run(run())
+    with SessionLocal() as s:
+        assert s.query(AIUsage).count() == before + 1
+
+
+def test_v3_usage_migration_requires_explicit_upgrade_and_preserves_data():
+    with tempfile.TemporaryDirectory(prefix="watchfeed-v3-migration-") as folder:
+        database = Path(folder) / "existing.sqlite"
+        with sqlite3.connect(database) as connection:
+            connection.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, text TEXT)")
+            connection.execute("INSERT INTO messages VALUES (1, 'existing message')")
+        env = os.environ.copy()
+        env.update(WATCHFEED_DEMO="false", DATABASE_URL=f"sqlite:///{database}",
+                   PYTHONPATH=str(APP_DIR))
+        check = subprocess.run(
+            [sys.executable, "-c", "from app.db import init_db; init_db()"],
+            cwd=APP_DIR, env=env, capture_output=True, text=True)
+        assert check.returncode != 0 and "migrate_v3" in check.stderr
+        for _ in range(2):
+            subprocess.run([sys.executable, "-m", "app.migrate_v3"], cwd=APP_DIR,
+                           env=env, check=True, capture_output=True)
+        with sqlite3.connect(database) as connection:
+            assert connection.execute("SELECT text FROM messages").fetchone()[0] == "existing message"
+            assert {"ai_usage", "ai_usage_groups"} <= {
+                row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}

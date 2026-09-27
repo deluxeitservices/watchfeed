@@ -10,9 +10,10 @@ import httpx
 from sqlalchemy import select
 
 from . import alerts, fx, market, media, refs
+from .ai_usage import UsageMeterError
 from .config import settings
 from .db import Group, Message, Offer, ParseCache, SessionLocal, utcnow
-from .parser import ParseError, extract_offers, looks_like_offer
+from .parser import InvalidBatch, OversizedBatch, ParseError, extract_offers_batch, looks_like_offer
 from .worker_utils import norm_ref  # noqa: F401  (re-exported for existing callers)
 
 log = logging.getLogger("worker")
@@ -139,26 +140,50 @@ def save_offers(s, msg: Message, raw_offers: list) -> tuple:
     return count, new
 
 
-async def _parse(msg: Message, group_name: str, client: httpx.AsyncClient, sem: asyncio.Semaphore):
-    if not looks_like_offer(msg.text):
-        return "SKIPPED", None
-    with SessionLocal() as s:
-        cached = s.get(ParseCache, msg.text_hash)
-    if cached:
-        return "OK", json.loads(cached.result_json)
-    async with sem:
-        try:
-            offers = await extract_offers(msg.text, group_name, client)
-        except ParseError as e:
-            return "ERROR", str(e)
-        except Exception as e:  # noqa: BLE001
-            log.exception("parse failed")
-            return "ERROR", repr(e)
-    with SessionLocal() as s:
-        if not s.get(ParseCache, msg.text_hash):
-            s.add(ParseCache(text_hash=msg.text_hash, result_json=json.dumps(offers)))
-            s.commit()
-    return "OK", offers
+def _chunks(candidates: list[Message]) -> list[list[Message]]:
+    """Bound both the message count and the prompt text in each paid request."""
+    chunks, current, chars = [], [], 0
+    for msg in candidates:
+        size = min(len(msg.text), settings.MAX_MESSAGE_CHARS) + 150
+        if current and (len(current) >= settings.AI_BATCH_SIZE or chars + size > 16000):
+            chunks.append(current)
+            current, chars = [], 0
+        current.append(msg)
+        chars += size
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def _parse_chunk(chunk: list[Message], names: dict, group_ids: dict,
+                       client: httpx.AsyncClient, sem: asyncio.Semaphore) -> dict:
+    items = [{"id": str(msg.id), "group": names.get(msg.group_id, ""),
+              "text": msg.text} for msg in chunk]
+    weights = {}
+    for msg in chunk:
+        groups = group_ids[msg.text_hash]
+        length = max(1, min(len(msg.text), settings.MAX_MESSAGE_CHARS))
+        for group in groups:
+            weights[group] = weights.get(group, 0) + max(1, length // len(groups))
+    try:
+        async with sem:
+            parsed = await extract_offers_batch(items, client, group_weights=weights)
+        return {msg.text_hash: ("OK", parsed[str(msg.id)]) for msg in chunk}
+    except (OversizedBatch, InvalidBatch) as exc:
+        if len(chunk) == 1:
+            return {chunk[0].text_hash: ("ERROR", str(exc))}
+        log.warning("splitting %d-message AI batch after %s", len(chunk), type(exc).__name__)
+        mid = len(chunk) // 2
+        halves = await asyncio.gather(*(_parse_chunk(part, names, group_ids, client, sem)
+                                        for part in (chunk[:mid], chunk[mid:])))
+        return {key: val for half in halves for key, val in half.items()}
+    except UsageMeterError:
+        raise  # Never continue paid parsing when metering failed.
+    except ParseError as exc:
+        return {msg.text_hash: ("ERROR", str(exc)) for msg in chunk}
+    except Exception as exc:  # noqa: BLE001
+        log.exception("batch parsing failed")
+        return {msg.text_hash: ("ERROR", repr(exc)) for msg in chunk}
 
 
 async def process_batch(limit: int = 25) -> tuple:
@@ -173,11 +198,35 @@ async def process_batch(limit: int = 25) -> tuple:
         return 0, 0
     sem = asyncio.Semaphore(settings.LLM_CONCURRENCY)
     unique = {}  # same text pasted into several groups -> one AI call
+    group_ids = {}
     for m in msgs:
         unique.setdefault(m.text_hash, m)
+        group_ids.setdefault(m.text_hash, set()).add(m.group_id)
+    by_hash, candidates = {}, []
+    with SessionLocal() as s:
+        for msg in unique.values():
+            if not looks_like_offer(msg.text):
+                by_hash[msg.text_hash] = ("SKIPPED", None)
+            else:
+                cached = s.get(ParseCache, msg.text_hash)
+                if cached:
+                    by_hash[msg.text_hash] = ("OK", json.loads(cached.result_json))
+                else:
+                    candidates.append(msg)
     async with httpx.AsyncClient(timeout=180) as client:
-        parsed = await asyncio.gather(*[_parse(m, names.get(m.group_id, ""), client, sem) for m in unique.values()])
-    by_hash = dict(zip(unique.keys(), parsed))
+        parsed = await asyncio.gather(*(_parse_chunk(chunk, names, group_ids, client, sem)
+                                        for chunk in _chunks(candidates)))
+    for result in parsed:
+        by_hash.update(result)
+    if parsed:
+        try:
+            with SessionLocal() as s:
+                for text_hash, (status, offers) in by_hash.items():
+                    if status == "OK" and not s.get(ParseCache, text_hash):
+                        s.add(ParseCache(text_hash=text_hash, result_json=json.dumps(offers)))
+                s.commit()
+        except Exception as exc:
+            raise UsageMeterError("AI results could not be cached; paid worker stopped") from exc
     results = [by_hash[m.text_hash] for m in msgs]
     errors, new_ids = 0, []
     with SessionLocal() as s:
@@ -249,6 +298,9 @@ async def run_forever() -> None:
                 await asyncio.sleep(3)
         except asyncio.CancelledError:
             raise
+        except UsageMeterError:
+            log.exception("AI usage or result persistence failed; stopping paid worker")
+            return
         except Exception:  # noqa: BLE001
             log.exception("worker loop error")
             await asyncio.sleep(10)

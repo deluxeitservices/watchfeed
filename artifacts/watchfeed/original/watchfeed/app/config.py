@@ -32,6 +32,7 @@ class Settings:
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
     ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
     LLM_CONCURRENCY = int(os.getenv("LLM_CONCURRENCY", "4"))
+    AI_BATCH_SIZE = max(1, min(int(os.getenv("AI_BATCH_SIZE", "8")), 8))
     MAX_MESSAGE_CHARS = int(os.getenv("MAX_MESSAGE_CHARS", "12000"))
 
     # Access

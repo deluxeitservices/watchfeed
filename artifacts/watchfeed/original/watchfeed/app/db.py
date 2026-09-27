@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (Boolean, DateTime, Float, ForeignKey, Index, Integer,
-                         String, Text, create_engine, inspect)
+                         Numeric, String, Text, create_engine, inspect)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import settings
@@ -53,6 +53,29 @@ class ParseCache(Base):
     text_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     result_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AIUsage(Base):
+    """One row per successful HTTP response from Anthropic, even if parsing fails."""
+    __tablename__ = "ai_usage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    model: Mapped[str] = mapped_column(String(120))
+    input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cache_creation_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cache_read_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_usd: Mapped[Optional[float]] = mapped_column(Numeric(14, 8), nullable=True)
+    message_count: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class AIUsageGroup(Base):
+    """Approximate per-group share of a single request's cost."""
+    __tablename__ = "ai_usage_groups"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    usage_id: Mapped[int] = mapped_column(ForeignKey("ai_usage.id"), index=True)
+    group_id: Mapped[str] = mapped_column(String(80), index=True)
+    estimated_usd: Mapped[Optional[float]] = mapped_column(Numeric(14, 8), nullable=True)
 
 
 class Offer(Base):
@@ -184,6 +207,14 @@ SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 
 def init_db() -> None:
+    # Existing databases must be backed up and explicitly upgraded before the
+    # app starts. create_all alone would otherwise silently create these tables.
+    inspector = inspect(engine)
+    if inspector.has_table("messages") and not all(
+        inspector.has_table(t) for t in ("ai_usage", "ai_usage_groups")
+    ):
+        raise RuntimeError("Existing database needs the additive upgrade. Back it up, "
+                           "then run 'python -m app.migrate_v3' before starting the app.")
     Base.metadata.create_all(engine)
     # Never silently run schema migrations against the live PostgreSQL database.
     required = {"dealer_key", "photo_id", "photo_kind", "market_pct",

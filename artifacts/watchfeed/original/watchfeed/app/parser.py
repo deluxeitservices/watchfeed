@@ -7,33 +7,44 @@ from typing import Optional
 
 import httpx
 
+from .ai_usage import record_usage
 from .config import settings
 
 log = logging.getLogger("parser")
 
 # ---------------------------------------------------------------- prefilter
-_KEYWORDS = re.compile(
-    r"\b(wts|wtb|fs|lf|ltb|sell|selling|buy|buying|looking|need|wanted|avail|available|stock|"
-    r"full ?set|box|papers|card|unworn|lnib|bnib|new|used|mint|net|"
-    r"rolex|patek|pp|audemars|ap|richard ?mille|rm|vacheron|vc|cartier|omega|tudor|"
+_WATCH_WORDS = re.compile(
+    r"\b(rolex|patek|pp|audemars|ap|richard ?mille|rm|vacheron|vc|cartier|omega|tudor|"
     r"iwc|breitling|hublot|panerai|jlc|jaeger|lange|fp ?journe|mb&f|tag|zenith|"
     r"daytona|submariner|sub|gmt|datejust|dj|day-?date|dd|yacht|explorer|nautilus|aquanaut|"
     r"royal ?oak|offshore|santos|panthere|speedmaster|batman|pepsi|sprite|hulk|"
-    r"hkd|usd|usdt|aed|eur|gbp|chf|sgd|dhs)\b",
+    r"speedy|seamaster)\b",
     re.I,
 )
-_REF = re.compile(r"\b\d{4,6}[a-z]{0,6}\b|\b[a-z]{1,4}[\-\s]?\d{2,}[a-z0-9\.\-]*\b", re.I)
+_REF = re.compile(r"\b(?:\d{5,6}[a-z]{0,6}|[a-z]{1,5}\d{4,}[a-z0-9]*|"
+                  r"\d{4,5}/[a-z0-9][a-z0-9/\-]*|\d{4,5}[a-z]{2}\.[a-z0-9.]+)\b", re.I)
+_SHORT_REF = re.compile(r"\b(?!19\d\d\b|20\d\d\b)\d{4}\b", re.I)
 _PRICE = re.compile(r"[$£€¥]|\d+(?:[.,]\d+)?\s?[km]\b|\b\d{1,3}(?:[,.]\d{3})+\b", re.I)
+_CURRENCY = re.compile(r"\b(?:hkd|usd|usdt|aed|eur|gbp|chf|sgd|dhs)\b", re.I)
+_TRADE = re.compile(r"\b(?:fs|lf|ltb|sell|selling|buy|buying|looking|need|wanted|"
+                    r"avail|available|stock)\b", re.I)
+_WATCH_CONTEXT = re.compile(
+    r"\b(?:watch(?:es)?|timepiece|wts|wtb|full ?set|dial|bezel|bracelet|unworn|lnib|bnib)\b",
+    re.I,
+)
+_NON_WATCH = re.compile(r"\b(?:room|rent|rental|flat|apartment|postcode|licen[cs]e|"
+                        r"driving|job|loan|delivery account|letting)\b", re.I)
 
 
 def looks_like_offer(text: str) -> bool:
     t = (text or "").strip()
     if len(t) < 5:
         return False
-    has_kw = bool(_KEYWORDS.search(t))
-    has_ref = bool(_REF.search(t))
-    has_price = bool(_PRICE.search(t))
-    return (has_ref and (has_kw or has_price)) or (has_kw and has_price)
+    if _NON_WATCH.search(t):
+        return False
+    return bool(_WATCH_WORDS.search(t) or _REF.search(t)
+                or (_SHORT_REF.search(t) and (_CURRENCY.search(t) or _WATCH_CONTEXT.search(t)))
+                or (_WATCH_CONTEXT.search(t) and (_TRADE.search(t) or _PRICE.search(t))))
 
 
 def text_hash(text: str) -> str:
@@ -136,6 +147,24 @@ OFFER_TOOL = {
     },
 }
 
+BATCH_TOOL = {
+    "name": "record_batch",
+    "description": "Return one item for each message id, with every watch offer in that message.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "messages": {"type": "array", "items": {"type": "object", "properties": {
+                "id": {"type": "string"},
+                "offers": OFFER_TOOL["input_schema"]["properties"]["offers"],
+            }, "required": ["id", "offers"]}},
+        },
+        "required": ["messages"],
+    },
+}
+BATCH_PROMPT = (SYSTEM_PROMPT.replace("record_offers", "record_batch") +
+                "\nEach input has an id and a group. Return exactly one messages entry per id; "
+                "keep offers with their own id only. Return an empty offers list when appropriate.")
+
 API_URL = "https://api.anthropic.com/v1/messages"
 
 
@@ -143,22 +172,18 @@ class ParseError(Exception):
     pass
 
 
-async def extract_offers(text: str, group_name: Optional[str] = None,
-                         client: Optional[httpx.AsyncClient] = None) -> list:
+class OversizedBatch(ParseError):
+    pass
+
+
+class InvalidBatch(ParseError):
+    pass
+
+
+async def _request(body: dict, client: Optional[httpx.AsyncClient],
+                   group_weights: dict[str, int], message_count: int) -> dict:
     if not settings.ANTHROPIC_API_KEY:
         raise ParseError("ANTHROPIC_API_KEY not set")
-    body = {
-        "model": settings.ANTHROPIC_MODEL,
-        "max_tokens": 8192,
-        "system": SYSTEM_PROMPT,
-        "tools": [OFFER_TOOL],
-        "tool_choice": {"type": "tool", "name": "record_offers"},
-        "messages": [{
-            "role": "user",
-            "content": f"WhatsApp group: {group_name or 'unknown'}\n\nMessage:\n<<<\n"
-                       f"{text[:settings.MAX_MESSAGE_CHARS]}\n>>>",
-        }],
-    }
     headers = {
         "x-api-key": settings.ANTHROPIC_API_KEY,
         "anthropic-version": "2023-06-01",
@@ -181,15 +206,85 @@ async def extract_offers(text: str, group_name: Optional[str] = None,
                 continue
             if r.status_code >= 400:
                 raise ParseError(f"LLM HTTP {r.status_code}: {r.text[:300]}")
-            data = r.json()
-            if data.get("stop_reason") == "max_tokens":
-                raise ParseError("message too long for one extraction")
-            for block in data.get("content", []):
-                if block.get("type") == "tool_use":
-                    offers = block.get("input", {}).get("offers", [])
-                    return offers if isinstance(offers, list) else []
-            return []
+            try:
+                data = r.json()
+            except ValueError as exc:
+                record_usage(settings.ANTHROPIC_MODEL, None, group_weights, message_count)
+                raise ParseError("LLM returned invalid JSON") from exc
+            if not isinstance(data, dict):
+                record_usage(settings.ANTHROPIC_MODEL, None, group_weights, message_count)
+                raise ParseError("LLM returned a non-object response")
+            # Record before inspecting content/stop_reason: truncated or malformed
+            # successful responses have already consumed tokens.
+            model = data.get("model")
+            record_usage(model if isinstance(model, str) else settings.ANTHROPIC_MODEL,
+                         data.get("usage"),
+                         group_weights, message_count)
+            return data
         raise ParseError("LLM unavailable after retries")
     finally:
         if own:
             await client.aclose()
+
+
+def _offers_from_response(data: dict) -> list:
+    if data.get("stop_reason") == "max_tokens":
+        raise OversizedBatch("message too long for one extraction")
+    for block in data.get("content", []):
+        if block.get("type") == "tool_use" and block.get("name") == "record_offers":
+            offers = block.get("input", {}).get("offers")
+            if isinstance(offers, list):
+                return offers
+    raise ParseError("LLM did not return a valid offer list")
+
+
+async def extract_offers(text: str, group_name: Optional[str] = None,
+                         client: Optional[httpx.AsyncClient] = None) -> list:
+    body = {
+        "model": settings.ANTHROPIC_MODEL, "max_tokens": 8192,
+        "system": SYSTEM_PROMPT, "tools": [OFFER_TOOL],
+        "tool_choice": {"type": "tool", "name": "record_offers"},
+        "messages": [{"role": "user", "content": f"WhatsApp group: {group_name or 'unknown'}\n\n"
+                      f"Message:\n<<<\n{text[:settings.MAX_MESSAGE_CHARS]}\n>>>"}],
+    }
+    data = await _request(body, client, {}, 1)
+    return _offers_from_response(data)
+
+
+async def extract_offers_batch(items: list[dict], client: Optional[httpx.AsyncClient] = None,
+                               group_weights: Optional[dict[str, int]] = None) -> dict[str, list]:
+    """Items have stable string id, group and text fields. Reject ambiguous replies."""
+    if not items or len(items) > 8:
+        raise ValueError("Batch size must be between 1 and 8")
+    body = {
+        "model": settings.ANTHROPIC_MODEL, "max_tokens": 8192,
+        "system": BATCH_PROMPT, "tools": [BATCH_TOOL],
+        "tool_choice": {"type": "tool", "name": "record_batch"},
+        "messages": [{"role": "user", "content": "\n\n".join(
+            f"Message id: {item['id']}\nWhatsApp group: {item['group']}\n"
+            f"Text:\n<<<\n{item['text'][:settings.MAX_MESSAGE_CHARS]}\n>>>"
+            for item in items)}],
+    }
+    data = await _request(body, client, group_weights or {}, len(items))
+    if data.get("stop_reason") == "max_tokens":
+        raise OversizedBatch("batch response reached the output token limit")
+    expected = {str(item["id"]) for item in items}
+    for block in data.get("content", []):
+        if block.get("type") != "tool_use" or block.get("name") != "record_batch":
+            continue
+        entries = block.get("input", {}).get("messages")
+        if not isinstance(entries, list):
+            break
+        result = {}
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("offers"), list):
+                break
+            key = entry.get("id")
+            if key not in expected or key in result:
+                break
+            result[key] = entry["offers"]
+        else:
+            if set(result) == expected:
+                return result
+        break
+    raise InvalidBatch("LLM returned missing, duplicate or unknown message ids")

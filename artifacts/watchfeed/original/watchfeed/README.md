@@ -13,6 +13,7 @@ Your WhatsApp (linked device) ─► WAHA bridge ─► app (webhook) ─► Pos
 * **Only groups you tick are stored.** Private chats and unticked groups are dropped.
 * **Duplicates are merged.** If the same dealer posts the same watch at the same price in several groups within 14 days, it shows as one offer ("Posts ×3").
 * **AI costs are kept down.** Chat like "ok", "thanks" and "good morning" is skipped before the AI sees it. Text copy-pasted into many groups is parsed once.
+* **New AI usage meter.** The admin page estimates USD costs from provider-reported tokens, shows received messages skipped before AI, and roughly allocates shared requests across groups. Figures start when this version is installed; they are not an Anthropic invoice or a spending cap.
 
 ---
 
@@ -93,6 +94,53 @@ the backup or migration fails. The `ps` output must include
 the app, or Apache will return HTTP 503. New WAHA photo settings take effect
 only when the WAHA service is separately recreated. That briefly interrupts
 WhatsApp; plan it after the core app works, and be ready to relink if needed.
+
+### Upgrade an existing Apache-hosted Watchfeed for AI cost metering
+
+This version adds two usage tables. **It will not start against an existing
+database until `app.migrate_v3` has been run.** The migration is additive and
+repeatable, but back up first. It does not enable or pause AI processing. If
+you have paused paid parsing, check the actual VPS `.env` contains
+`WORKER_ENABLED=false` **before** recreating the app. An absent setting
+defaults to **true**. Do not proceed with the restart while the value is
+uncertain. No one has verified the setting on your VPS from this workspace.
+
+```bash
+cd /opt/watchfeed-repo/artifacts/watchfeed/original/watchfeed
+# Pull/review the new code and confirm compose.apache.yml is present first.
+grep '^WORKER_ENABLED=' .env   # confirm false if paid parsing must remain paused
+umask 077
+backup="$HOME/watchfeed-before-ai-usage-$(date +%Y%m%d-%H%M%S).dump"
+docker compose -f docker-compose.yml -f compose.apache.yml exec -T db \
+  sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h 127.0.0.1 -U watchfeed -d watchfeed -Fc' \
+  > "$backup"
+test -s "$backup" || { echo "Backup failed; stop here"; exit 1; }
+docker compose -f docker-compose.yml -f compose.apache.yml build app
+docker compose -f docker-compose.yml -f compose.apache.yml run --rm --no-deps app python -m app.migrate_v3
+docker compose -f docker-compose.yml -f compose.apache.yml up -d --no-deps --force-recreate app
+curl -fsS http://127.0.0.1:18080/health
+docker compose -f docker-compose.yml -f compose.apache.yml ps app
+docker compose -f docker-compose.yml -f compose.apache.yml exec -T app \
+  python -c 'from app.config import settings; print("worker enabled:", settings.WORKER_ENABLED)'
+```
+
+Stop if the backup or migration fails. Confirm the final worker check prints
+`False` if you intend to keep paid parsing paused, and `ps` still shows the
+localhost `18080->8000` binding. Do not overwrite `.env`, use `down -v`,
+or bulk-retry failed messages. The filter keeps messages without clear watch
+context out of paid parsing; it may skip vague watch offers. Each request
+groups up to 8 **different, uncached** candidate messages
+(`AI_BATCH_SIZE=8`, adjustable 1–8). Truncated or invalid batch responses can
+be retried as smaller groups, and those attempts still cost tokens. Cost
+estimates use the configured Haiku 4.5 token prices; unknown models or missing
+token usage are marked unpriced and excluded from dollar sums.
+
+To judge savings before choosing to resume paid parsing, compare a representative
+pre-upgrade day in Anthropic's usage dashboard with a similar-volume day after
+the upgrade: look at paid request counts and input/output tokens, not only USD.
+The admin meter shows the post-upgrade 24-hour and seven-day totals and skipped
+counts. It has no historical usage from before installation; Anthropic's own
+usage and invoices remain the source of truth for actual charges.
 
 ## 3. Connect WhatsApp and pick groups
 

@@ -16,7 +16,7 @@ from sqlalchemy import func, or_, select, update
 from . import advisor, extra, feed_settings, fx, ingest, market, media, refs, waha, worker
 from .auth import is_admin as live_is_admin, staff_accounts
 from .config import settings
-from .db import Dealer, Group, Message, Offer, SessionLocal, StockItem, init_db, utcnow
+from .db import AIUsage, AIUsageGroup, Dealer, Group, Message, Offer, SessionLocal, StockItem, init_db, utcnow
 from .parser import ParseError, extract_offers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -484,6 +484,48 @@ def admin_stats():
             "fx_updated_at": fx.updated_at.isoformat() + "Z" if fx.updated_at else None,
             "ai_configured": bool(settings.ANTHROPIC_API_KEY),
         }
+
+
+@app.get("/admin/api/ai-usage", dependencies=[Depends(is_admin)])
+def admin_ai_usage():
+    now = utcnow()
+    with SessionLocal() as s:
+        windows = {}
+        for label, days in (("24h", 1), ("7d", 7)):
+            since = now - timedelta(days=days)
+            requests, priced, total, input_tokens, output_tokens = s.execute(
+                select(func.count(AIUsage.id), func.count(AIUsage.estimated_usd),
+                       func.sum(AIUsage.estimated_usd), func.sum(AIUsage.input_tokens),
+                       func.sum(AIUsage.output_tokens))
+                .where(AIUsage.created_at >= since)
+            ).one()
+            skipped = s.scalar(select(func.count(Message.id)).where(
+                Message.created_at >= since, Message.status == "SKIPPED"
+            ))
+            windows[label] = {
+                "estimated_usd": float(total or 0),
+                "requests": requests,
+                "unpriced_requests": requests - priced,
+                "input_tokens": input_tokens or 0,
+                "output_tokens": output_tokens or 0,
+                "skipped_received_messages": skipped,
+            }
+        rows = s.execute(
+            select(AIUsageGroup.group_id, Group.name, func.sum(AIUsageGroup.estimated_usd),
+                   func.count(AIUsageGroup.id),
+                   func.count(AIUsageGroup.estimated_usd))
+            .join(AIUsage, AIUsage.id == AIUsageGroup.usage_id)
+            .outerjoin(Group, Group.id == AIUsageGroup.group_id)
+            .where(AIUsage.created_at >= now - timedelta(days=7))
+            .group_by(AIUsageGroup.group_id, Group.name)
+            .order_by(func.sum(AIUsageGroup.estimated_usd).desc())
+        ).all()
+        groups = [{"id": group_id, "name": name or group_id,
+                   "estimated_usd": float(amount or 0), "requests": requests,
+                   "unpriced_requests": requests - priced}
+                  for group_id, name, amount, requests, priced in rows]
+    return {"windows": windows, "groups_7d": groups, "worker_enabled": settings.WORKER_ENABLED,
+            "model": settings.ANTHROPIC_MODEL}
 
 
 @app.get("/admin/api/errors", dependencies=[Depends(is_admin)])

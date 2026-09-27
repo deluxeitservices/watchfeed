@@ -57,6 +57,7 @@
   <section class="card">
     <h2>Stats</h2>
     <div class="stats" id="stats"></div>
+    <div id="ai-usage" class="muted" role="status" aria-live="polite">Loading AI usage…</div>
     <div class="row" style="margin-top:10px">
       <button id="retry">Retry failed messages</button>
       <button id="ntest">Send test alert (Telegram / email)</button>
@@ -134,6 +135,7 @@ async function refreshStatus(){
 }
 async function refreshStats(){
   const s = await api("/admin/api/stats");
+  const usage = await api("/admin/api/ai-usage");
   const m = s.messages_by_status || {};
   const tiles = [
     ["Groups enabled", s.groups_enabled], ["Messages (24h)", s.messages_24h], ["Offers (24h)", s.offers_24h],
@@ -143,6 +145,24 @@ async function refreshStats(){
   $("stats").innerHTML = tiles.map(([k, v]) => `<div class="stat"><span class="muted">${k}</span><b>${(v ?? 0).toLocaleString("en-GB")}</b></div>`).join("")
     + (s.ai_configured ? "" : `<div class="stat" style="border-color:#f1dfae"><b style="font-size:14px;color:#b4531a">ANTHROPIC_API_KEY missing</b></div>`);
   $("errinfo").textContent = s.last_message_at ? "Last message " + new Date(s.last_message_at).toLocaleString("en-GB") : "";
+  const usd = n => "$" + Number(n || 0).toFixed(4);
+  const window = (label, w) => `<div class="stat"><span class="muted">AI estimate · ${label}</span>
+    <b>${usd(w.estimated_usd)}</b><small>${w.requests} paid responses · ${w.unpriced_requests} unpriced<br>
+    ${w.skipped_received_messages} received messages skipped before AI</small></div>`;
+  const groupRows = usage.groups_7d.map(g => `<tr><td>${esc(g.name)}</td><td>${usd(g.estimated_usd)}</td>
+    <td>${g.requests}</td><td>${g.unpriced_requests}</td></tr>`).join("");
+  $("ai-usage").innerHTML = `<h3>AI cost meter (estimated USD)</h3>
+    <div class="stats">${window("24 hours", usage.windows["24h"])}${window("7 days", usage.windows["7d"])}</div>
+    <p class="muted">Provider-reported tokens priced at the configured Haiku 4.5 rates. Not an Anthropic invoice or a spending cap.
+    Only requests recorded after this upgrade appear here; older charges are not included.
+    Unpriced requests (missing token usage or unknown model) are excluded from the dollar totals.
+    Skipped counts show messages received within each period and filtered before AI.</p>
+    <h3>Approximate cost by group · 7 days</h3>
+    <p class="muted">Request costs are split by input message length; a repost shared across groups is split between them.
+    Manual/advisor requests are included in overall totals but have no group allocation.</p>
+    <div class="tablewrap"><table><thead><tr><th>Group</th><th>Est. USD</th><th>Requests shared</th><th>Unpriced</th></tr></thead>
+    <tbody>${groupRows || '<tr><td colspan="4">No group usage recorded yet.</td></tr>'}</tbody></table></div>
+    <p class="muted">Worker configured: ${usage.worker_enabled ? "on" : "off"} · Model: ${esc(usage.model)}</p>`;
 }
 function renderGroups(){
   const f = $("filter").value.toLowerCase();
