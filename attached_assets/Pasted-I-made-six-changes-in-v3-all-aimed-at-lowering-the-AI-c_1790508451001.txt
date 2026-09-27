@@ -1,0 +1,42 @@
+I made six changes in v3, all aimed at lowering the AI cost.
+
+1. Free filter before the AI
+
+Before: anything with a price or reference-like text went to the AI, including room ads, because postcodes like "E15" looked like references.
+Now: a message goes to the AI only if it mentions a watch word (brand, model, WTS/WTB, full set, dial, bezel…) or a real reference shape (126710BLNR, 116500, 5711/1A, WSSA0018).
+Messages about rooms, rent, licences, driving, jobs, loans or delivery accounts are skipped for free, unless they also mention a watch.
+
+2. 8 messages per AI call
+
+Before: one AI call per message, and each call carried about 1,650 tokens of instructions.
+Now: up to 8 messages go in one call, so the instructions are paid once for all 8. If the answer doesn't fit, the batch is split in half automatically.
+
+3. Shorter instructions and compact answers
+
+Before: instructions were about 1,650 tokens, and each watch came back with every field written out, including empty ones (about 140 tokens).
+Now: instructions are about 1,100 tokens.
+The AI answers with short codes (e.g. cond: N, set: F) and skips empty fields, which is about 60% smaller.
+Instead of copying the message line back, it gives the line number and the tool looks up the text itself.
+
+4. Auto-pause for groups with no watches
+
+If a group has 40 messages checked by the AI and none contain a watch, the AI stops for that group.
+Its messages are still saved, marked "paused". Admin shows "paused" with a Resume button, and there's a Pause button for any group.
+
+5. Cost meter
+
+Every AI call records its token usage.
+Admin now shows AI cost (24h), AI cost (7 days) and Skipped: AI paused, plus an AI (7 days) cost column per group.
+
+6. Safe upgrade
+
+Database auto-update: when a new version adds columns, the app adds them itself on start. Your existing data isn't touched.
+docker-compose.apache.yml: a version for your server where Apache handles the domain. It has no Caddy and keeps the app on 127.0.0.1:18080.
+try_parse shows cost: the test command now also prints the tokens used and the cost of the call.
+
+New settings in .env (optional, the defaults are fine):
+
+AI_BATCH_SIZE=8        # messages per AI call
+AUTO_PAUSE_AFTER=40    # 0 = never auto-pause
+
+Not changed: what gets extracted (the same fields), the model (still Haiku, the cheapest), and every other page.
