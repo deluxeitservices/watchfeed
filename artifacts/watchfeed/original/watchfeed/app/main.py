@@ -345,6 +345,9 @@ async def advise_parse(body: ParseIn):
     """Fill the advisor form from a customer's message."""
     if settings.DEMO_MODE:
         raise HTTPException(403, "Message parsing is disabled in demo mode")
+    with SessionLocal() as s:
+        if worker.budget_status(s)["blocked"]:
+            raise HTTPException(429, "AI limit reached or usage unpriced; enter watch details manually")
     try:
         offers = await extract_offers(
             body.text[:4000],
@@ -403,8 +406,16 @@ def admin_groups():
     with SessionLocal() as s:
         gs = s.scalars(select(Group).order_by(Group.enabled.desc(), Group.name)).all()
         offers = dict(s.execute(select(Offer.group_id, func.count()).group_by(Offer.group_id)).all())
+        group_cost = dict(s.execute(
+            select(AIUsageGroup.group_id, func.sum(AIUsageGroup.estimated_usd))
+            .join(AIUsage, AIUsage.id == AIUsageGroup.usage_id)
+            .where(AIUsage.created_at >= utcnow() - timedelta(days=7))
+            .group_by(AIUsageGroup.group_id)
+        ).all())
     return [{"id": g.id, "name": g.name, "enabled": g.enabled, "participants": g.participants,
              "messages": g.message_count, "offers": offers.get(g.id, 0),
+             "ai_paused": g.ai_paused, "ai_checked": g.ai_checked, "ai_hits": g.ai_hits,
+             "cost_7d_usd": float(group_cost.get(g.id) or 0),
              "last_message_at": g.last_message_at.isoformat() + "Z" if g.last_message_at else None}
             for g in gs]
 
@@ -440,6 +451,24 @@ def admin_toggle(body: GroupToggle):
         s.execute(update(Group).where(Group.id.in_(body.ids)).values(enabled=body.enabled))
         s.commit()
     return {"ok": True}
+
+
+class AIPause(BaseModel):
+    paused: bool
+
+
+@app.post("/admin/api/groups/{group_id}/ai", dependencies=[Depends(is_admin)])
+def admin_group_ai(group_id: str, body: AIPause):
+    with SessionLocal() as s:
+        group = s.get(Group, group_id)
+        if not group:
+            raise HTTPException(404, "Group not found")
+        group.ai_paused = body.paused
+        if not body.paused:
+            group.ai_checked = 0
+            group.ai_hits = 0
+        s.commit()
+    return {"ok": True, "paused": body.paused}
 
 
 class Backfill(BaseModel):
@@ -483,6 +512,7 @@ def admin_stats():
             "last_message_at": (lambda t: t.isoformat() + "Z" if t else None)(s.scalar(select(func.max(Message.ts)))),
             "fx_updated_at": fx.updated_at.isoformat() + "Z" if fx.updated_at else None,
             "ai_configured": bool(settings.ANTHROPIC_API_KEY),
+            "ai_spend": worker.budget_status(s),
         }
 
 

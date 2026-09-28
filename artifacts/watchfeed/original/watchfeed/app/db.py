@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (Boolean, DateTime, Float, ForeignKey, Index, Integer,
-                         Numeric, String, Text, create_engine, inspect)
+                         Numeric, String, Text, create_engine, inspect, text)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import settings
@@ -25,6 +25,9 @@ class Group(Base):
     message_count: Mapped[int] = mapped_column(Integer, default=0)
     last_message_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    ai_paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    ai_checked: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    ai_hits: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
 
 
 class Message(Base):
@@ -53,6 +56,14 @@ class ParseCache(Base):
     text_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     result_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class LineCache(Base):
+    """Parsed watch line plus normalized message context for reposted lists."""
+    __tablename__ = "line_cache"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    offers_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 class AIUsage(Base):
@@ -210,11 +221,17 @@ def init_db() -> None:
     # Existing databases must be backed up and explicitly upgraded before the
     # app starts. create_all alone would otherwise silently create these tables.
     inspector = inspect(engine)
-    if inspector.has_table("messages") and not all(
-        inspector.has_table(t) for t in ("ai_usage", "ai_usage_groups")
-    ):
-        raise RuntimeError("Existing database needs the additive upgrade. Back it up, "
-                           "then run 'python -m app.migrate_v3' before starting the app.")
+    if inspector.has_table("messages"):
+        required = ("ai_usage", "ai_usage_groups", "line_cache")
+        group_columns = ({c["name"] for c in inspector.get_columns("groups")}
+                         if inspector.has_table("groups") else set())
+        usage_columns = ({c["name"] for c in inspector.get_columns("ai_usage")}
+                         if inspector.has_table("ai_usage") else set())
+        if not all(inspector.has_table(t) for t in required) or not {
+            "ai_paused", "ai_checked", "ai_hits"
+        } <= group_columns or not {"id", "created_at", "estimated_usd"} <= usage_columns:
+            raise RuntimeError("Existing database needs the explicit additive upgrade. Back it up, "
+                               "then run 'python -m app.migrate_v4' before starting the app.")
     Base.metadata.create_all(engine)
     # Never silently run schema migrations against the live PostgreSQL database.
     required = {"dealer_key", "photo_id", "photo_kind", "market_pct",

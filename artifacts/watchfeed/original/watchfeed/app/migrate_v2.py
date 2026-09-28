@@ -6,7 +6,7 @@ Run with: python -m app.migrate_v2
 
 from sqlalchemy import inspect, text
 
-from .db import AIUsage, AIUsageGroup, Base, Offer, engine
+from .db import AIUsage, AIUsageGroup, Base, LineCache, Offer, engine
 
 
 OFFER_COLUMNS = (
@@ -24,7 +24,8 @@ OFFER_COLUMNS = (
 def upgrade() -> None:
     # create_all adds the new feature tables, but does not alter existing tables.
     Base.metadata.create_all(engine, tables=[table for table in Base.metadata.sorted_tables
-                                              if table not in (AIUsage.__table__, AIUsageGroup.__table__)])
+                                               if table not in (AIUsage.__table__, AIUsageGroup.__table__,
+                                                                LineCache.__table__)])
     existing = {column["name"] for column in inspect(engine).get_columns("offers")}
     with engine.begin() as conn:
         for name in OFFER_COLUMNS:

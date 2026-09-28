@@ -734,7 +734,7 @@ def test_bad_batch_mapping_counts_usage_and_rejects_misassigned_offer(client, mo
         assert s.query(AIUsage).count() == before + 1
 
 
-def test_v3_usage_migration_requires_explicit_upgrade_and_preserves_data():
+def test_v4_usage_migration_requires_explicit_upgrade_and_preserves_data():
     with tempfile.TemporaryDirectory(prefix="watchfeed-v3-migration-") as folder:
         database = Path(folder) / "existing.sqlite"
         with sqlite3.connect(database) as connection:
@@ -746,12 +746,167 @@ def test_v3_usage_migration_requires_explicit_upgrade_and_preserves_data():
         check = subprocess.run(
             [sys.executable, "-c", "from app.db import init_db; init_db()"],
             cwd=APP_DIR, env=env, capture_output=True, text=True)
-        assert check.returncode != 0 and "migrate_v3" in check.stderr
+        assert check.returncode != 0 and "migrate_v4" in check.stderr
         for _ in range(2):
-            subprocess.run([sys.executable, "-m", "app.migrate_v3"], cwd=APP_DIR,
+            # The migration needs a pre-existing groups table, as a real
+            # Watchfeed database has.
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE IF NOT EXISTS groups (id VARCHAR(80) PRIMARY KEY)")
+            subprocess.run([sys.executable, "-m", "app.migrate_v4"], cwd=APP_DIR,
                            env=env, check=True, capture_output=True)
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT text FROM messages").fetchone()[0] == "existing message"
-            assert {"ai_usage", "ai_usage_groups"} <= {
+            assert {"ai_usage", "ai_usage_groups", "line_cache"} <= {
                 row[0] for row in connection.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+def test_v4_migration_keeps_uploaded_daily_usage():
+    with tempfile.TemporaryDirectory(prefix="watchfeed-v5-daily-") as folder:
+        database = Path(folder) / "v5.sqlite"
+        with sqlite3.connect(database) as db:
+            db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, text TEXT)")
+            db.execute("CREATE TABLE groups (id VARCHAR(80) PRIMARY KEY)")
+            db.execute("CREATE TABLE ai_usage (day VARCHAR(10) PRIMARY KEY,"
+                       " tokens_in INTEGER, tokens_out INTEGER, calls INTEGER)")
+            db.execute("INSERT INTO ai_usage VALUES ('2026-09-28', 1000000, 100000, 7)")
+            db.execute("INSERT INTO messages VALUES (1, 'saved listing')")
+        env = os.environ.copy()
+        env.update(WATCHFEED_DEMO="false", DATABASE_URL=f"sqlite:///{database}", PYTHONPATH=str(APP_DIR))
+        for _ in range(2):
+            subprocess.run([sys.executable, "-m", "app.migrate_v4"], cwd=APP_DIR, env=env,
+                           check=True, capture_output=True)
+        with sqlite3.connect(database) as db:
+            assert db.execute("SELECT tokens_in, calls FROM ai_usage_legacy_daily").fetchone() == (1000000, 7)
+            assert db.execute("SELECT text FROM messages").fetchone() == ("saved listing",)
+            assert {"ai_paused", "ai_checked", "ai_hits"} <= {
+                col[1] for col in db.execute("PRAGMA table_info(groups)")}
+
+
+def test_v5_budget_blocks_worker_and_manual_parse(client, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "AI_MONTHLY_BUDGET_USD", 0)
+    calls_before = calls["n"]
+    response = client.post("/webhook/waha?token=sec", json=payload(
+        900, G1, "WTS 326500LN 2026 £12,000"))
+    assert response.status_code == 200
+    assert asyncio.run(worker.process_batch()) == (1, 0)
+    with SessionLocal() as s:
+        assert s.query(Message).filter_by(wa_id=f"false_{G1}_900").one().status == "BUDGET"
+    assert calls["n"] == calls_before
+    assert client.post("/api/advise/parse", headers=STAFF,
+                       json={"text": "WTS 326500LN £12,000"}).status_code == 429
+    assert client.get("/admin/api/stats", headers=ADMIN).json()["ai_spend"]["blocked"] is True
+
+
+def test_admin_can_resume_auto_paused_group(client):
+    route = f"/admin/api/groups/{G1}/ai"
+    assert client.post(route, headers=STAFF, json={"paused": True}).status_code == 401
+    assert client.post(route, headers=ADMIN, json={"paused": True}).json()["paused"]
+    assert {row["id"]: row for row in client.get("/admin/api/groups", headers=ADMIN).json()}[G1]["ai_paused"]
+    assert client.post(route, headers=ADMIN, json={"paused": False}).json()["paused"] is False
+
+
+def test_compact_batch_preserves_offer_fields_and_source(client, monkeypatch):
+    monkeypatch.setattr(parser.settings, "ANTHROPIC_API_KEY", "test-only")
+    message = "🇭🇰 All HKD\nRolex 126710BLNR 2024 FS 128k"
+
+    def reply(request):
+        sent = __import__("json").loads(request.content)
+        assert "L2: Rolex 126710BLNR" in sent["messages"][0]["content"]
+        return _httpx.Response(200, json={
+            "model": "claude-haiku-4-5-20251001",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+            "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "name": "record_batch", "input": {
+                "messages": [{"id": "12", "offers": [{"l": [2], "dir": "WTS", "brand": "Rolex",
+                    "ref": "126710BLNR", "cond": "N", "set": "F", "yr": 2024, "price": 128000,
+                    "cur": "HKD", "cc": "HK"}]}]}}],
+        })
+
+    async def run():
+        async with _httpx.AsyncClient(transport=_httpx.MockTransport(reply)) as http:
+            return await parser.extract_offers_batch(
+                [{"id": "12", "group": "HK", "text": message}], http, {G1: len(message)})
+
+    offer = asyncio.run(run())["12"][0]
+    assert offer["source_text"] == "Rolex 126710BLNR 2024 FS 128k"
+    assert offer["_lines"] == [2]
+    assert offer["condition"] == "NEW" and offer["set_type"] == "FULL_SET"
+    assert offer["price"] == 128000 and offer["country"] == "HK"
+
+
+def test_v5_line_cache_repost_old_messages_and_auto_pause(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app.config import settings
+    from app.db import Base, Group, LineCache
+
+    isolated_engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                                    poolclass=StaticPool)
+    Base.metadata.create_all(isolated_engine)
+    sessions = sessionmaker(bind=isolated_engine, expire_on_commit=False)
+    monkeypatch.setattr(worker, "SessionLocal", sessions)
+    monkeypatch.setattr(settings, "AUTO_PAUSE_AFTER", 2)
+    sent = []
+
+    async def fake_batch(items, client=None, group_weights=None):
+        sent.extend(item["text"] for item in items)
+        return {item["id"]: [
+            {"direction": "WTS", "brand": "Rolex", "reference": line.split()[0],
+             "price": 1000, "currency": "GBP", "_lines": [i],
+             "source_text": line}
+            for i, line in enumerate(item["text"].splitlines(), 1) if "£" in line
+        ] for item in items}
+
+    monkeypatch.setattr(worker, "extract_offers_batch", fake_batch)
+    day1 = "🇬🇧 London stock\n116519LN white 2021 FS £27,000\n116508 green 2020 FS £38,000\nall prices GBP"
+    day2 = day1.replace("£38,000", "£37,500") + "\n126331 wimbledon 2022 FS £14,200"
+
+    def store(wa_id, text, ts=None, group=G1):
+        with sessions() as s:
+            s.add(Message(wa_id=wa_id, group_id=group, text=text,
+                          text_hash=parser.text_hash(text), ts=ts or utcnow()))
+            s.commit()
+
+    try:
+        with sessions() as s:
+            s.add_all([__import__("app.db", fromlist=["Group"]).Group(id=G1, name="HK"),
+                       __import__("app.db", fromlist=["Group"]).Group(id=G2, name="Dubai")])
+            s.commit()
+        store("older", "WTS 326500LN 2025 £12,000",
+              utcnow() - dt.timedelta(days=3), G2)
+        assert asyncio.run(worker.process_batch()) == (1, 0)
+        with sessions() as s:
+            assert s.query(Message).filter_by(wa_id="older").one().status == "OLD"
+        assert sent == []
+        store("day1", day1)
+        assert asyncio.run(worker.process_batch()) == (1, 0)
+        assert len(sent) == 1 and "116519LN" in sent[-1]
+        with sessions() as s:
+            assert s.query(LineCache).count() == 2
+        store("day2", day2)
+        assert asyncio.run(worker.process_batch()) == (1, 0)
+        assert len(sent) == 2 and "116519LN" not in sent[-1]
+        assert "£37,500" in sent[-1] and "126331" in sent[-1]
+        with sessions() as s:
+            assert s.query(LineCache).count() == 4
+        # No-offer paid results, rather than chat, trigger the group pause.
+        async def no_offers(items, client=None, group_weights=None):
+            sent.extend(item["text"] for item in items)
+            return {item["id"]: [] for item in items}
+        monkeypatch.setattr(worker, "extract_offers_batch", no_offers)
+        store("empty1", "WTS AP 15510ST", group=G2)
+        store("empty2", "WTS AP 15500ST", group=G2)
+        asyncio.run(worker.process_batch())
+        with sessions() as s:
+            assert s.get(Group, G2).ai_paused is True
+        before = len(sent)
+        store("after-pause", "WTS AP 15550ST", group=G2)
+        asyncio.run(worker.process_batch())
+        assert len(sent) == before
+        with sessions() as s:
+            assert s.query(Message).filter_by(wa_id="after-pause").one().status == "PAUSED"
+    finally:
+        isolated_engine.dispose()

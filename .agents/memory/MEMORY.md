@@ -1,3 +1,4 @@
 - [GitHub shell authentication](github-shell-auth.md) — connector repository permissions and Replit Shell Git credentials are separate; a working connector does not prove CLI push works.
 - [Alert queue limits](alert-queue-limits.md) — filter pending, due notification jobs before applying a batch cap; completed markers can otherwise starve delivery.
 - [Feed processing priority](feed-processing-priority.md) — favor fresh offers over FIFO backlog, but retain older pending messages.
+- [AI usage compatibility](ai-usage-compatibility.md) — preserve request-level metering when merging older daily-meter snapshots; carry historical daily charges separately.

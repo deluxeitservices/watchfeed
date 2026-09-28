@@ -147,6 +147,19 @@ OFFER_TOOL = {
     },
 }
 
+COMPACT_OFFERS = {"type": "array", "items": {"type": "object", "properties": {
+    "l": {"type": "array", "items": {"type": "integer"}},
+    "dir": {"type": "string", "enum": ["WTS", "WTB"]},
+    "brand": {"type": "string"}, "fam": {"type": "string"}, "model": {"type": "string"},
+    "ref": {"type": "string"}, "dial": {"type": "string"}, "case": {"type": "string"},
+    "brace": {"type": "string"}, "dia": {"type": "boolean"},
+    "cond": {"type": "string", "enum": ["N", "L", "U", "V"]},
+    "set": {"type": "string", "enum": ["F", "W", "B", "P"]},
+    "yr": {"type": "integer"}, "mo": {"type": "integer"}, "price": {"type": "number"},
+    "cur": {"type": "string"}, "disc": {"type": "number"},
+    "cc": {"type": "string"}, "city": {"type": "string"}, "note": {"type": "string"},
+}, "required": ["l", "dir"]}}
+
 BATCH_TOOL = {
     "name": "record_batch",
     "description": "Return one item for each message id, with every watch offer in that message.",
@@ -155,15 +168,51 @@ BATCH_TOOL = {
         "properties": {
             "messages": {"type": "array", "items": {"type": "object", "properties": {
                 "id": {"type": "string"},
-                "offers": OFFER_TOOL["input_schema"]["properties"]["offers"],
+                "offers": COMPACT_OFFERS,
             }, "required": ["id", "offers"]}},
         },
         "required": ["messages"],
     },
 }
-BATCH_PROMPT = (SYSTEM_PROMPT.replace("record_offers", "record_batch") +
-                "\nEach input has an id and a group. Return exactly one messages entry per id; "
-                "keep offers with their own id only. Return an empty offers list when appropriate.")
+BATCH_PROMPT = """Extract every individual WTS/WTB watch offer from these numbered WhatsApp
+dealer messages. Call record_batch exactly once, returning one entry for EACH id,
+including empty offers lists. Never mix offers between ids. One watch line = one
+offer. Use the exact numbered source line(s) in l, including all lines describing
+that offer; do not attach an offer to a header alone. Non-watch chat = no offers.
+Use short fields: dir=WTS/WTB, brand=canonical brand, fam=collection, model=nickname,
+ref=manufacturer reference as written (never invent), dial=color, case=material,
+brace=bracelet, dia=true only when stated, cond=N(new)/L(like new)/U(used)/V(vintage),
+set=F(full set)/W(watch only)/B(box only)/P(papers only), yr=4-digit card year,
+mo=month, price=full units (23.5k=23500), cur=ISO currency, disc=percent
+vs retail if price absent, cc=ISO-2 watch location, city, note=short details.
+Omit unknown values rather than returning null. Header/footer context such as
+brand, location, currency, year or full set applies to the watch lines beneath
+it when explicitly shared; never copy a condition from one watch line to another.
+Keep distinct repeated watch lines as distinct offers. Output only via the tool."""
+
+_COND = {"N": "NEW", "L": "LIKE_NEW", "U": "USED", "V": "VINTAGE"}
+_SET = {"F": "FULL_SET", "W": "WATCH_ONLY", "B": "BOX_ONLY", "P": "PAPERS_ONLY"}
+
+
+def _expand_compact(offer: dict, lines: list[str]) -> dict:
+    nums = offer.get("l")
+    if not isinstance(nums, list) or not nums or any(
+        type(n) is not int or n < 1 or n > len(lines) for n in nums
+    ):
+        raise InvalidBatch("Offer contains missing or invalid source line numbers")
+    if offer.get("dir") not in ("WTS", "WTB"):
+        raise InvalidBatch("Offer has invalid direction")
+    return {
+        "direction": offer["dir"], "brand": offer.get("brand"), "family": offer.get("fam"),
+        "model": offer.get("model"), "reference": offer.get("ref"),
+        "dial_color": offer.get("dial"), "case_material": offer.get("case"),
+        "bracelet": offer.get("brace"), "diamond_indices": bool(offer.get("dia")),
+        "condition": _COND.get(offer.get("cond")), "set_type": _SET.get(offer.get("set")),
+        "year": offer.get("yr"), "month": offer.get("mo"), "price": offer.get("price"),
+        "currency": offer.get("cur"), "discount_pct": offer.get("disc"),
+        "country": offer.get("cc"), "city": offer.get("city"), "notes": offer.get("note"),
+        "source_text": "\n".join(lines[n - 1].strip() for n in nums), "_lines": nums,
+    }
 
 API_URL = "https://api.anthropic.com/v1/messages"
 
@@ -262,7 +311,10 @@ async def extract_offers_batch(items: list[dict], client: Optional[httpx.AsyncCl
         "tool_choice": {"type": "tool", "name": "record_batch"},
         "messages": [{"role": "user", "content": "\n\n".join(
             f"Message id: {item['id']}\nWhatsApp group: {item['group']}\n"
-            f"Text:\n<<<\n{item['text'][:settings.MAX_MESSAGE_CHARS]}\n>>>"
+            f"Text:\n<<<\n" + "\n".join(
+                f"L{n}: {line}" for n, line in enumerate(
+                    item["text"][:settings.MAX_MESSAGE_CHARS].splitlines(), 1)
+            ) + "\n>>>"
             for item in items)}],
     }
     data = await _request(body, client, group_weights or {}, len(items))
@@ -282,7 +334,15 @@ async def extract_offers_batch(items: list[dict], client: Optional[httpx.AsyncCl
             key = entry.get("id")
             if key not in expected or key in result:
                 break
-            result[key] = entry["offers"]
+            original = next(item for item in items if str(item["id"]) == key)
+            lines = original["text"][:settings.MAX_MESSAGE_CHARS].splitlines()
+            try:
+                result[key] = [
+                    _expand_compact(offer, lines) if isinstance(offer, dict) and "l" in offer
+                    else offer for offer in entry["offers"]
+                ]
+            except (TypeError, ValueError, KeyError) as exc:
+                raise InvalidBatch("Invalid compact offer") from exc
         else:
             if set(result) == expected:
                 return result

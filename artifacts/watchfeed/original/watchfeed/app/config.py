@@ -34,6 +34,12 @@ class Settings:
     LLM_CONCURRENCY = int(os.getenv("LLM_CONCURRENCY", "4"))
     AI_BATCH_SIZE = max(1, min(int(os.getenv("AI_BATCH_SIZE", "8")), 8))
     MAX_MESSAGE_CHARS = int(os.getenv("MAX_MESSAGE_CHARS", "12000"))
+    AI_MAX_LINES_PER_CALL = max(1, int(os.getenv("AI_MAX_LINES_PER_CALL", "40")))
+    AI_MONTHLY_BUDGET_USD = max(0, float(os.getenv("AI_MONTHLY_BUDGET_USD", "20")))
+    AI_DAILY_BUDGET_USD = max(0, float(os.getenv("AI_DAILY_BUDGET_USD", "0")))
+    AI_INTERVAL_MINUTES = max(0, int(os.getenv("AI_INTERVAL_MINUTES", "60")))
+    AI_MAX_AGE_HOURS = max(0, float(os.getenv("AI_MAX_AGE_HOURS", "24")))
+    AUTO_PAUSE_AFTER = max(0, int(os.getenv("AUTO_PAUSE_AFTER", "40")))
 
     # Access
     STAFF_USER = os.getenv("STAFF_USER", "staff")
@@ -45,7 +51,8 @@ class Settings:
     BASE_CURRENCY = os.getenv("BASE_CURRENCY", "GBP").upper()
     AUTO_ENABLE_NEW_GROUPS = _bool("AUTO_ENABLE_NEW_GROUPS", False)
     DUPLICATE_WINDOW_DAYS = int(os.getenv("DUPLICATE_WINDOW_DAYS", "14"))
-    WORKER_ENABLED = _bool("WORKER_ENABLED", True)
+    # Explicit opt-in prevents an upgrade from silently resuming paid parsing.
+    WORKER_ENABLED = _bool("WORKER_ENABLED", False)
     TARGET_MARGIN_PCT = float(os.getenv("TARGET_MARGIN_PCT", "10"))
     IMPORT_UPLIFT_PCT = float(os.getenv("IMPORT_UPLIFT_PCT", "0"))
     STAFF_USERS = os.getenv("STAFF_USERS", "")

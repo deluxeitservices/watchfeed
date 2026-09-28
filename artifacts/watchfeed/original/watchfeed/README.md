@@ -13,7 +13,7 @@ Your WhatsApp (linked device) ─► WAHA bridge ─► app (webhook) ─► Pos
 * **Only groups you tick are stored.** Private chats and unticked groups are dropped.
 * **Duplicates are merged.** If the same dealer posts the same watch at the same price in several groups within 14 days, it shows as one offer ("Posts ×3").
 * **AI costs are kept down.** Chat like "ok", "thanks" and "good morning" is skipped before the AI sees it. Text copy-pasted into many groups is parsed once.
-* **New AI usage meter.** The admin page estimates USD costs from provider-reported tokens, shows received messages skipped before AI, and roughly allocates shared requests across groups. Figures start when this version is installed; they are not an Anthropic invoice or a spending cap.
+* **AI cost controls and usage meter.** The admin page estimates USD costs from provider-reported tokens, shows messages skipped before AI, and roughly allocates shared requests across groups. Figures start when this version is installed; daily/monthly limits use these estimates and are not an Anthropic billing cap.
 
 ---
 
@@ -95,14 +95,14 @@ the app, or Apache will return HTTP 503. New WAHA photo settings take effect
 only when the WAHA service is separately recreated. That briefly interrupts
 WhatsApp; plan it after the core app works, and be ready to relink if needed.
 
-### Upgrade an existing Apache-hosted Watchfeed for AI cost metering
+### Previous upgrade step: AI cost metering (v3)
 
 This version adds two usage tables. **It will not start against an existing
 database until `app.migrate_v3` has been run.** The migration is additive and
 repeatable, but back up first. It does not enable or pause AI processing. If
 you have paused paid parsing, check the actual VPS `.env` contains
-`WORKER_ENABLED=false` **before** recreating the app. An absent setting
-defaults to **true**. Do not proceed with the restart while the value is
+`WORKER_ENABLED=false` **before** recreating the app. In this version, an absent setting
+defaults to **false**. Do not proceed with the restart while the value is
 uncertain. No one has verified the setting on your VPS from this workspace.
 
 ```bash
@@ -141,6 +141,42 @@ the upgrade: look at paid request counts and input/output tokens, not only USD.
 The admin meter shows the post-upgrade 24-hour and seven-day totals and skipped
 counts. It has no historical usage from before installation; Anthropic's own
 usage and invoices remain the source of truth for actual charges.
+
+### Apply the v5 cost controls (after the usage-meter upgrade)
+
+This upgrade requires another **explicit additive migration**. On the Replit
+preview only, it can be applied to the local preview database after a backup.
+For an Apache VPS, use the same backup/build/app-only-recreate pattern above,
+but run `python -m app.migrate_v4` **instead of** `migrate_v3` before starting
+the new app. The migration adds group pause counters and a line cache, preserves
+offers and messages, and recognizes the uploaded v5 ZIP's different daily
+`ai_usage` schema (retaining it as `ai_usage_legacy_daily`). It is repeatable.
+Confirm the backup succeeds first. Keep `WORKER_ENABLED=false` until you choose
+to turn paid parsing back on; absent `WORKER_ENABLED` now also means **off**.
+This workspace has not changed or inspected the live VPS database.
+
+**Check your real VPS Compose setup first:** the uploaded ZIP uses a complete
+`docker-compose.apache.yml`, while this repository uses the override
+`compose.apache.yml` together with `docker-compose.yml`. They are not
+interchangeable. Use the live stack's existing Compose file(s) for the backup
+and migration, then plan the transition without changing its database,
+WhatsApp session, or media volumes. Do not copy the ZIP over the live
+installation, replace `.env`, use `down -v`, or bulk-retry old messages.
+
+Once deliberately enabled, background AI checks run at most once every
+`AI_INTERVAL_MINUTES` (default 60), process newest messages first, and share
+up to 8 messages / 40 candidate watch lines per request. Unchanged watch lines
+in reposted lists are served from the line cache when their shared context is
+the same. Messages older than `AI_MAX_AGE_HOURS` (default 24) are stored as
+`OLD` without a new AI call; after a daily or monthly **estimated** limit is
+reached they are stored as `BUDGET`. A group with 40 paid checks and zero
+offers is marked `PAUSED` until an admin resumes it. These states **do not
+appear as parsed offers**. Admin can pause/resume each group but enabling a
+group does not override its AI pause. A staff member's manual advisor parse
+also observes the budget. The default $20 monthly / about $0.67 daily limits
+are based on recorded estimated USD, not an exact Anthropic billing cap; one
+in-flight response can exceed a limit. Unknown/unpriced usage blocks further
+paid calls until reviewed. Check actual charges in Anthropic's dashboard.
 
 ## 3. Connect WhatsApp and pick groups
 

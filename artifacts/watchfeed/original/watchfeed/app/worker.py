@@ -3,16 +3,18 @@ import asyncio
 import hashlib
 import json
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
 from typing import Optional
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 
-from . import alerts, fx, market, media, refs
+from . import alerts, cost, fx, market, media, refs
 from .ai_usage import UsageMeterError
 from .config import settings
-from .db import Group, Message, Offer, ParseCache, SessionLocal, utcnow
+from .db import AIUsage, Group, LineCache, Message, Offer, ParseCache, SessionLocal, utcnow
 from .parser import InvalidBatch, OversizedBatch, ParseError, extract_offers_batch, looks_like_offer
 from .worker_utils import norm_ref  # noqa: F401  (re-exported for existing callers)
 
@@ -155,8 +157,49 @@ def _chunks(candidates: list[Message]) -> list[list[Message]]:
     return chunks
 
 
+def spend(s) -> dict:
+    """Recorded estimates in USD, including retained daily usage from a v5 ZIP."""
+    now = utcnow()
+    day = datetime(now.year, now.month, now.day)
+    month = datetime(now.year, now.month, 1)
+    rows = s.scalars(select(AIUsage).where(AIUsage.created_at >= month)).all()
+    today = sum((r.estimated_usd or Decimal(0) for r in rows if r.created_at >= day), Decimal(0))
+    monthly = sum((r.estimated_usd or Decimal(0) for r in rows), Decimal(0))
+    unknown = sum(r.estimated_usd is None for r in rows)
+    calls_today = sum(r.created_at >= day for r in rows)
+    if inspect(s.bind).has_table("ai_usage_legacy_daily"):
+        legacy = s.execute(text("SELECT day, tokens_in, tokens_out, calls FROM ai_usage_legacy_daily "
+                                "WHERE day >= :month"), {"month": month.strftime("%Y-%m-%d")}).all()
+        for date, tin, tout, calls in legacy:
+            amount = Decimal(tin or 0) / Decimal(1000000) + Decimal(tout or 0) * 5 / Decimal(1000000)
+            monthly += amount
+            if date == day.strftime("%Y-%m-%d"):
+                today += amount
+                calls_today += calls or 0
+    return {"today": float(today), "month": float(monthly), "calls_today": calls_today,
+            "unpriced_month": unknown}
+
+
+def budget_status(s) -> dict:
+    usage = spend(s)
+    daily = settings.AI_DAILY_BUDGET_USD or settings.AI_MONTHLY_BUDGET_USD / 30
+    usage.update(daily_budget=daily, monthly_budget=settings.AI_MONTHLY_BUDGET_USD,
+                 remaining=min(daily - usage["today"], settings.AI_MONTHLY_BUDGET_USD - usage["month"]))
+    # An unknown price cannot safely be treated as a zero-dollar charge.
+    usage["blocked"] = usage["remaining"] <= 0 or usage["unpriced_month"] > 0
+    usage["interval_minutes"] = settings.AI_INTERVAL_MINUTES
+    usage["max_age_hours"] = settings.AI_MAX_AGE_HOURS
+    usage["auto_pause_after"] = settings.AUTO_PAUSE_AFTER
+    usage["next_run"] = (STATE["next_ai_run"].isoformat() + "Z"
+                         if STATE["next_ai_run"] else None)
+    return usage
+
+
 async def _parse_chunk(chunk: list[Message], names: dict, group_ids: dict,
                        client: httpx.AsyncClient, sem: asyncio.Semaphore) -> dict:
+    with SessionLocal() as s:
+        if budget_status(s)["blocked"]:
+            return {msg.text_hash: ("BUDGET", None) for msg in chunk}
     items = [{"id": str(msg.id), "group": names.get(msg.group_id, ""),
               "text": msg.text} for msg in chunk]
     weights = {}
@@ -169,18 +212,20 @@ async def _parse_chunk(chunk: list[Message], names: dict, group_ids: dict,
         async with sem:
             parsed = await extract_offers_batch(items, client, group_weights=weights)
         return {msg.text_hash: ("OK", parsed[str(msg.id)]) for msg in chunk}
-    except (OversizedBatch, InvalidBatch) as exc:
+    except OversizedBatch as exc:
         if len(chunk) == 1:
             return {chunk[0].text_hash: ("ERROR", str(exc))}
         log.warning("splitting %d-message AI batch after %s", len(chunk), type(exc).__name__)
         mid = len(chunk) // 2
-        halves = await asyncio.gather(*(_parse_chunk(part, names, group_ids, client, sem)
-                                        for part in (chunk[:mid], chunk[mid:])))
+        halves = []
+        for part in (chunk[:mid], chunk[mid:]):
+            halves.append(await _parse_chunk(part, names, group_ids, client, sem))
         return {key: val for half in halves for key, val in half.items()}
     except UsageMeterError:
         raise  # Never continue paid parsing when metering failed.
     except ParseError as exc:
-        return {msg.text_hash: ("ERROR", str(exc)) for msg in chunk}
+        transient = any(x in str(exc) for x in ("HTTP 429", "HTTP 5", "transport", "unavailable"))
+        return {msg.text_hash: ("ERROR", str(exc), transient) for msg in chunk}
     except Exception as exc:  # noqa: BLE001
         log.exception("batch parsing failed")
         return {msg.text_hash: ("ERROR", repr(exc)) for msg in chunk}
@@ -190,61 +235,127 @@ async def process_batch(limit: int = 25) -> tuple:
     """Returns (processed, errors)."""
     with SessionLocal() as s:
         msgs = s.scalars(select(Message).where(Message.status == "NEW")
-                         # Prioritize current offers when an older backlog exists.
-                         # Older NEW messages remain stored and are processed later.
                          .order_by(Message.ts.desc(), Message.id.desc()).limit(limit)).all()
-        names = {g.id: g.name for g in s.scalars(select(Group)).all()}
+        groups = {g.id: g for g in s.scalars(select(Group)).all()}
     if not msgs:
         return 0, 0
+    names = {key: group.name for key, group in groups.items()}
     sem = asyncio.Semaphore(settings.LLM_CONCURRENCY)
-    unique = {}  # same text pasted into several groups -> one AI call
+    unique = {}  # same text pasted into several active groups -> one AI call
     group_ids = {}
     for m in msgs:
+        if groups.get(m.group_id) and groups[m.group_id].ai_paused:
+            continue
         unique.setdefault(m.text_hash, m)
         group_ids.setdefault(m.text_hash, set()).add(m.group_id)
-    by_hash, candidates = {}, []
+    by_hash, work = {}, {}
+    oldest = utcnow() - timedelta(hours=settings.AI_MAX_AGE_HOURS)
     with SessionLocal() as s:
         for msg in unique.values():
             if not looks_like_offer(msg.text):
                 by_hash[msg.text_hash] = ("SKIPPED", None)
+                continue
+            cached = s.get(ParseCache, msg.text_hash)
+            if cached:
+                by_hash[msg.text_hash] = ("OK", json.loads(cached.result_json))
+                continue
+            p = cost.plan(msg.text[:settings.MAX_MESSAGE_CHARS])
+            hits = ({r.key: json.loads(r.offers_json) for r in s.scalars(
+                select(LineCache).where(LineCache.key.in_(list(p.keys.values())))).all()}
+                if p.keys else {})
+            have = {i: hits[key] for i, key in p.keys.items() if key in hits}
+            if p.cand and len(have) == len(p.cand):
+                by_hash[msg.text_hash] = ("OK", [o for i in p.cand for o in have[i]])
+            elif msg.ts < oldest:
+                by_hash[msg.text_hash] = ("OLD", None)
             else:
-                cached = s.get(ParseCache, msg.text_hash)
-                if cached:
-                    by_hash[msg.text_hash] = ("OK", json.loads(cached.result_json))
-                else:
-                    candidates.append(msg)
-    async with httpx.AsyncClient(timeout=180) as client:
-        parsed = await asyncio.gather(*(_parse_chunk(chunk, names, group_ids, client, sem)
-                                        for chunk in _chunks(candidates)))
-    for result in parsed:
-        by_hash.update(result)
-    if parsed:
+                work[msg.text_hash] = (msg, p, have)
+    pieces, piece_info, piece_groups = [], {}, {}
+    for h, (msg, p, have) in work.items():
+        todo = [i for i in p.cand if i not in have]
+        items = cost.make_items(p, todo, settings.AI_MAX_LINES_PER_CALL) if todo else [
+            cost.Item(msg.text[:settings.MAX_MESSAGE_CHARS], [], 1)]
+        for n, item in enumerate(items):
+            key = f"{h}:{n}"
+            piece = SimpleNamespace(id=f"{msg.id}-{n}", group_id=msg.group_id,
+                                    text=item.text, text_hash=key)
+            pieces.append((piece, item))
+            piece_info[key] = (h, p, item)
+            piece_groups[key] = group_ids[h]
+    answers = {}
+    chunks = cost.batches(pieces, settings.AI_MAX_LINES_PER_CALL, settings.AI_BATCH_SIZE)
+    if chunks:
+        async with httpx.AsyncClient(timeout=180) as client:
+            for chunk in chunks:
+                answers.update(await _parse_chunk(
+                    [piece for piece, _ in chunk], names, client=client,
+                    group_ids=piece_groups, sem=sem,
+                ))
+    if work:
         try:
             with SessionLocal() as s:
-                for text_hash, (status, offers) in by_hash.items():
-                    if status == "OK" and not s.get(ParseCache, text_hash):
-                        s.add(ParseCache(text_hash=text_hash, result_json=json.dumps(offers)))
+                for h, (msg, p, have) in work.items():
+                    mine = [(piece.text_hash, item) for piece, item in pieces
+                            if piece_info[piece.text_hash][0] == h]
+                    outcomes = [answers.get(key, ("BUDGET", None)) for key, _ in mine]
+                    per_line, loose = dict(have), []
+                    for (key, item), outcome in zip(mine, outcomes):
+                        if outcome[0] != "OK":
+                            continue
+                        mapping, extra, safe = cost.assign(item, outcome[1])
+                        if safe:
+                            for index, offers in mapping.items():
+                                per_line[index] = offers
+                                if not s.get(LineCache, p.keys[index]):
+                                    s.add(LineCache(key=p.keys[index], offers_json=json.dumps(offers)))
+                        else:
+                            # Ambiguous source-line mapping must not poison the line cache.
+                            loose += [o for offers in mapping.values() for o in offers]
+                        loose += extra
+                    if any(outcome[0] == "BUDGET" for outcome in outcomes):
+                        by_hash[h] = ("BUDGET", None)
+                    elif any(outcome[0] == "ERROR" for outcome in outcomes):
+                        error = next(outcome for outcome in outcomes if outcome[0] == "ERROR")
+                        by_hash[h] = error
+                    else:
+                        offers = [o for i in p.cand for o in per_line.get(i, [])] + loose
+                        by_hash[h] = ("OK", offers)
+                        if not s.get(ParseCache, h):
+                            s.add(ParseCache(text_hash=h, result_json=json.dumps(offers)))
                 s.commit()
         except Exception as exc:
             raise UsageMeterError("AI results could not be cached; paid worker stopped") from exc
-    results = [by_hash[m.text_hash] for m in msgs]
-    errors, new_ids = 0, []
+    errors, new_ids, checked = 0, [], set()
     with SessionLocal() as s:
-        for m, (status, data) in zip(msgs, results):
+        for m in msgs:
+            outcome = (("PAUSED", None) if groups.get(m.group_id) and groups[m.group_id].ai_paused
+                       else by_hash[m.text_hash])
+            status, data = outcome[:2]
             msg, created = s.get(Message, m.id), []
-            if status == "SKIPPED":
-                msg.status = "SKIPPED"
+            if status in ("SKIPPED", "PAUSED", "OLD", "BUDGET"):
+                msg.status = status
             elif status == "ERROR":
                 errors += 1
                 msg.attempts += 1
                 msg.error = (data or "")[:1000]
-                if msg.attempts >= 3:
+                if msg.attempts >= 3 or not (len(outcome) > 2 and outcome[2]):
                     msg.status = "ERROR"
             else:
                 n, created = save_offers(s, msg, data or [])
                 msg.offers_count = n
                 msg.status = "PARSED" if n else "NO_OFFERS"
                 msg.error = None
+                if m.text_hash in work and (m.group_id, m.text_hash) not in checked:
+                    checked.add((m.group_id, m.text_hash))
+                    g = s.get(Group, m.group_id)
+                    if g:
+                        g.ai_checked = (g.ai_checked or 0) + 1
+                        g.ai_hits = (g.ai_hits or 0) + (1 if n else 0)
+                        if (settings.AUTO_PAUSE_AFTER and g.ai_checked >= settings.AUTO_PAUSE_AFTER
+                                and not g.ai_hits):
+                            g.ai_paused = True
+                            log.info("AI paused for group %s after %d no-offer checks",
+                                     g.name, g.ai_checked)
             s.commit()
             if status == "OK":
                 new_ids += [o.id for o in created]
@@ -254,6 +365,9 @@ async def process_batch(limit: int = 25) -> tuple:
         except Exception:  # noqa: BLE001 - alert failures must not stop parsing
             log.exception("alert processing failed")
     return len(msgs), errors
+
+
+STATE = {"next_ai_run": None}
 
 
 async def run_forever() -> None:
@@ -291,7 +405,12 @@ async def run_forever() -> None:
                     await alerts.dispatch_outbox()
                 except Exception:  # noqa: BLE001 - retry failures must not stop parsing
                     log.exception("notification outbox delivery failed")
+            if STATE["next_ai_run"] is not None and utcnow() < STATE["next_ai_run"]:
+                await asyncio.sleep(min(5, max(0, (STATE["next_ai_run"] - utcnow()).total_seconds())))
+                continue
             n, errors = await process_batch()
+            if settings.AI_INTERVAL_MINUTES:
+                STATE["next_ai_run"] = utcnow() + timedelta(minutes=settings.AI_INTERVAL_MINUTES)
             if errors:
                 await asyncio.sleep(30)
             elif n == 0:
