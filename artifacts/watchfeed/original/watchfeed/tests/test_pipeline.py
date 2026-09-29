@@ -910,3 +910,73 @@ def test_v5_line_cache_repost_old_messages_and_auto_pause(monkeypatch):
             assert s.query(Message).filter_by(wa_id="after-pause").one().status == "PAUSED"
     finally:
         isolated_engine.dispose()
+
+
+def test_incoming_message_is_staff_visible_until_parsed(client):
+    from app.db import Group
+
+    unique = "WTS 1989ROLEXEXAMPLE GBP 12345 rare watch"
+    with SessionLocal() as s:
+        group = s.get(Group, G1)
+        if group is None:
+            group = Group(id=G1, name="HK Dealers", enabled=True)
+            s.add(group)
+        group.enabled = True
+        s.commit()
+    sent = payload(938717, G1, unique)
+    assert client.post("/webhook/waha?token=sec", json=sent).json()["stored"]
+    params = {"include_messages": "true", "group": G1, "q": "1989ROLEXEXAMPLE"}
+    assert client.get("/api/offers", params=params).status_code == 401
+    result = client.get("/api/offers", headers=STAFF, params=params).json()
+    assert result["total"] == 1
+    pending = result["items"][0]
+    assert pending["kind"] == "message" and pending["status"] == "NEW"
+    assert pending["sender_phone"] == "447700900001"
+    assert client.get("/api/offers", headers=STAFF, params={"q": "1989ROLEXEXAMPLE"}).json()["total"] == 0
+    assert client.get("/api/offers", headers=STAFF, params={**params, "priced_only": "true"}).json()["total"] == 0
+    assert client.get(f"/api/messages/{pending['id']}").status_code == 401
+    detail = client.get(f"/api/messages/{pending['id']}", headers=ALI).json()
+    assert detail["text"] == unique and detail["sender_phone"] == "447700900001"
+    assert detail["group"] == "HK Dealers"
+
+    with SessionLocal() as s:
+        s.get(Group, G1).enabled = False
+        s.commit()
+    assert client.get("/api/offers", headers=STAFF, params=params).json()["total"] == 0
+    assert client.get(f"/api/messages/{pending['id']}", headers=STAFF).status_code == 404
+    with SessionLocal() as s:
+        s.get(Group, G1).enabled = True
+        s.commit()
+
+    with SessionLocal() as s:
+        message = s.get(Message, pending["id"])
+        message.status = "BUDGET"
+        s.commit()
+    blocked = client.get("/api/offers", headers=STAFF, params=params).json()["items"][0]
+    assert blocked["display_status"] == "Budget skipped · not queued"
+
+    with SessionLocal() as s:
+        message = s.get(Message, pending["id"])
+        raw = [
+            {"direction": "WTS", "brand": "Rolex", "reference": "1989ROLEXEXAMPLE",
+             "price": 12345, "currency": "GBP", "source_text": unique},
+            {"direction": "WTS", "brand": "Rolex", "reference": "1989ROLEXEXAMPLE2",
+             "price": 18000, "currency": "GBP", "source_text": unique},
+        ]
+        n, created = worker.save_offers(s, message, raw)
+        message.status = "PARSED"
+        message.offers_count = n
+        s.commit()
+    parsed = client.get("/api/offers", headers=STAFF, params=params).json()
+    assert parsed["total"] == 2 and {i["kind"] for i in parsed["items"]} == {"offer"}
+    assert {i["price"] for i in parsed["items"]} == {12345, 18000}
+    assert client.get("/api/offers", headers=STAFF, params={
+        **params, "min_price": 15000}).json()["total"] == 1
+
+    assert client.post("/webhook/waha?token=sec", json=payload(
+        938718, G1, unique + " another message")).json()["stored"]
+    mixed = client.get("/api/offers", headers=STAFF, params=params).json()
+    assert mixed["total"] == 3 and [i["kind"] for i in mixed["items"]].count("message") == 1
+    pages = [client.get("/api/offers", headers=STAFF, params={
+        **params, "page_size": 1, "page": n}).json()["items"][0] for n in (1, 2, 3)]
+    assert len({(item["kind"], item["id"]) for item in pages}) == 3

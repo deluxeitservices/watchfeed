@@ -3,3 +3,4 @@
 - [Feed processing priority](feed-processing-priority.md) — favor fresh offers over FIFO backlog, but retain older pending messages.
 - [AI usage compatibility](ai-usage-compatibility.md) — preserve request-level metering when merging older daily-meter snapshots; carry historical daily charges separately.
 - [Watchfeed VPS repository path](watchfeed-vps-path.md) — the user-supplied live VPS clone path is /opt/watchfeed-repo; verify it before giving deployment commands.
+- [Watchfeed test isolation](watchfeed-test-isolation.md) — shared pipeline fixtures can hide missing setup; new tests should pass alone as well as with the suite.

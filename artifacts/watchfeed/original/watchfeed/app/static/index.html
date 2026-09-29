@@ -9,7 +9,10 @@
   .bar label{font-size:12px;color:var(--ink2);display:flex;gap:5px;align-items:center;white-space:nowrap}
   .tablewrap table{min-width:1180px}.pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:12px}
   .summary{color:var(--muted);margin:0 0 10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-  @media(max-width:700px){.bar{padding:10px 12px}.bar input[type=search]{min-width:0}}
+  .message-preview{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .message-full{white-space:pre-wrap;overflow-wrap:anywhere;max-height:50vh;overflow:auto;border:1px solid var(--line);padding:12px;border-radius:8px}
+  .message-row td{background:#f8faf7}.message-row .pending-label{display:inline-block;max-width:145px;white-space:normal}
+  @media(max-width:700px){.bar{padding:10px 12px}.bar input[type=search]{min-width:0}.message-preview{max-width:210px}}
 </style>
 </head>
 <body>
@@ -40,12 +43,24 @@ renderNav("/");
 let state={page:1,sort:"last_seen",order:"desc",total:0,pageSize:50,direction:""};
 let latestLoad=0, autoLoadRunning=false, isAdminViewer=false, autoEnabled=false;
 const AUTO_REFRESH_MS=60*60*1000;
+const MESSAGE_REFRESH_MS=2*60*1000;
 let nextAutoRefreshAt=Date.now()+AUTO_REFRESH_MS;
+let lastMessageRefreshAt=Date.now();
 const FILTERS=["period","brand","condition","set_type","country","group","min_price","max_price","year_from"], CHECKS=["deals_only","priced_only","hide_handled","show_blocked"];
 function params(){const p=new URLSearchParams(),v=id=>$(id).value.trim();if(v("q"))p.set("q",v("q"));if(state.direction)p.set("direction",state.direction);
   FILTERS.forEach(k=>{if(v(k))p.set(k,v(k));});CHECKS.forEach(k=>{if($(k).checked)p.set(k,"true");});
-  p.set("sort",state.sort);p.set("order",state.order);p.set("page",state.page);p.set("page_size",state.pageSize);return p;}
+  p.set("sort",state.sort);p.set("order",state.order);p.set("page",state.page);p.set("page_size",state.pageSize);p.set("include_messages","true");return p;}
 function row(o){
+  if(o.kind==="message"){
+    return `<tr class="message-row"><td>—</td>
+      <td title="${esc(new Date(o.last_seen_at).toLocaleString("en-GB"))}">${ago(o.last_seen_at)}</td>
+      <td>—</td>
+      <td><div class="message-preview" title="${esc(o.preview)}">${esc(o.preview || "—")}</div><div class="small muted">${esc(o.group)}</div></td>
+      <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+      <td>${esc(o.sender_name || "—")}${o.sender_phone?`<div class="small">${esc("+"+o.sender_phone)}</div>`:""}</td>
+      <td>—</td><td>—</td>
+      <td><span class="badge pending-label">${esc(o.display_status)}</span><div><button class="linkish small" data-message="${o.id}">View message</button></div></td></tr>`;
+  }
   const title=[o.brand,o.family,o.model].filter(Boolean).join(" · "),details=[o.dial_color&&`${o.dial_color} dial`,o.case_material,o.bracelet,o.diamond_indices&&"diamond indices"].filter(Boolean);
   const fresh=Date.now()-new Date(o.last_seen_at)<3600e3,date=o.year?(o.month?`${String(o.month).padStart(2,"0")}/${o.year}`:o.year):"";
   const disc=o.discount_pct!=null?`<div class="small muted">${o.discount_pct>0?"+":""}${o.discount_pct}% vs retail</div>`:"";
@@ -59,11 +74,25 @@ function row(o){
     <td>${flag(o.country)} ${esc(o.city||o.country||"")}</td><td title="${esc((o.groups||[]).join(", "))}">${o.seen_count>1?`×${o.seen_count}`:"1"}<div class="small muted">${(o.groups||[]).length} grp</div></td>
     <td>${trackBadge(o.track)}<div><button class="linkish small" data-offer="${o.id}">Open</button></div></td></tr>`;
 }
-async function load(){const request=++latestLoad;try{const d=await api("/api/offers?"+params());if(request!==latestLoad)return;state.total=d.total;$("rows").innerHTML=d.items.map(row).join("");$("empty").hidden=d.items.length>0;
-  $("count").textContent=`${d.total.toLocaleString("en-GB")} offers`;const start=d.total?(state.page-1)*state.pageSize+1:0;$("range").textContent=`${start}–${Math.min(state.page*state.pageSize,d.total)} of ${d.total}`;
-  nextAutoRefreshAt=Date.now()+AUTO_REFRESH_MS;
+async function load(resetHourlyTimer=true){const request=++latestLoad;try{const d=await api("/api/offers?"+params());if(request!==latestLoad)return;state.total=d.total;$("rows").innerHTML=d.items.map(row).join("");$("empty").hidden=d.items.length>0;
+  $("count").textContent=`${d.total.toLocaleString("en-GB")} feed entries`;const start=d.total?(state.page-1)*state.pageSize+1:0;$("range").textContent=`${start}–${Math.min(state.page*state.pageSize,d.total)} of ${d.total}`;
+  lastMessageRefreshAt=Date.now();
+  if(resetHourlyTimer)nextAutoRefreshAt=Date.now()+AUTO_REFRESH_MS;
   $("prev").disabled=state.page<=1;$("next").disabled=state.page*state.pageSize>=d.total;$("updated").textContent=PREVIEW_MODE?"Sample data":"Feed checked "+new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-}catch(e){if(request===latestLoad){$("count").textContent="Error loading offers: "+e.message;$("updated").textContent="Refresh failed";}}}
+}catch(e){if(request===latestLoad){$("count").textContent="Error loading feed: "+e.message;$("updated").textContent="Refresh failed";}}}
+async function openMessage(id){
+  const body=modal("Original WhatsApp message","<p class='muted'>Loading…</p>");
+  try{
+    const m=await api(`/api/messages/${id}`);
+    if(!body.isConnected)return;
+    body.innerHTML=`<div class="small muted">Group: ${esc(m.group)} · ${esc(new Date(m.timestamp).toLocaleString("en-GB"))}</div>
+      <p><strong>Sender:</strong> ${esc(m.sender_name||"Unavailable")}<br>
+      <strong>Mobile:</strong> ${m.sender_phone?esc("+"+m.sender_phone):"Unavailable"}<br>
+      <strong>Status:</strong> ${esc(m.display_status)}</p>
+      <div class="message-full">${esc(m.text)}</div>`;
+  }catch(e){if(body.isConnected)body.textContent="Could not load message: "+e.message;}
+}
+$("rows").addEventListener("click",e=>{const button=e.target.closest("[data-message]");if(button)openMessage(button.dataset.message);});
 async function loadFacets(){const f=await api("/api/facets");BASE=f.base_currency; $("basehead").textContent=`Price ${BASE}`;$("min_price").placeholder=`Min ${BASE}`;$("max_price").placeholder=`Max ${BASE}`;
   f.brands.forEach(b=>$("brand").insertAdjacentHTML("beforeend",`<option>${esc(b)}</option>`));f.countries.forEach(c=>$("country").insertAdjacentHTML("beforeend",`<option value="${esc(c)}">${flag(c)} ${esc(c)}</option>`));f.groups.forEach(g=>$("group").insertAdjacentHTML("beforeend",`<option value="${esc(g.id)}">${esc(g.name)}</option>`));}
 let t;const reload=()=>{state.page=1;clearTimeout(t);t=setTimeout(load,250);};$("q").addEventListener("input",reload);
@@ -84,7 +113,9 @@ async function syncRefreshSetting(){
     autoEnabled=isAdminViewer&&!!me.feed_auto_refresh;
     if(autoEnabled&&!wasEnabled)nextAutoRefreshAt=Date.now()+AUTO_REFRESH_MS;
     $("refresh-mode").hidden=!isAdminViewer;
-    if(isAdminViewer)$("refresh-mode").textContent=autoEnabled?"Auto-refresh on (hourly)":"Auto-refresh off";
+    if(isAdminViewer)$("refresh-mode").textContent=autoEnabled
+      ?"Hourly refresh on · New message checks every 2 min"
+      :"Hourly refresh off · New message checks every 2 min";
   }catch(e){autoEnabled=false;$("refresh-mode").hidden=true;}
 }
 async function autoRefresh(){
@@ -93,10 +124,16 @@ async function autoRefresh(){
   nextAutoRefreshAt=Date.now()+AUTO_REFRESH_MS;
   try{await load();}finally{autoLoadRunning=false;}
 }
-// The timer checks whether an hour has passed; it makes no feed request until due.
-setInterval(autoRefresh,60000);
+// Check even when the visible page contains only offers: new WAHA messages can arrive anytime.
+async function checkIncoming(){
+  if(autoLoadRunning||document.hidden||Date.now()-lastMessageRefreshAt<MESSAGE_REFRESH_MS
+      ||($("modal")&&$("modal").open))return;
+  autoLoadRunning=true;
+  try{await load(false);}finally{autoLoadRunning=false;}
+}
+setInterval(()=>{checkIncoming();autoRefresh();},60000);
 setInterval(()=>{if(isAdminViewer&&!document.hidden)syncRefreshSetting();},60000);
-async function resumeRefresh(){if(document.hidden)return;if(isAdminViewer)await syncRefreshSetting();autoRefresh();}
+async function resumeRefresh(){if(document.hidden)return;if(isAdminViewer)await syncRefreshSetting();await checkIncoming();autoRefresh();}
 document.addEventListener("visibilitychange",()=>{if(!document.hidden)resumeRefresh();});
 window.addEventListener("focus",resumeRefresh);
 $("refresh-now").addEventListener("click",async()=>{

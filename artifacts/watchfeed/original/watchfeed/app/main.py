@@ -13,7 +13,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select, update
 
-from . import advisor, extra, feed_settings, fx, ingest, market, media, refs, waha, worker
+from . import advisor, extra, feed_settings, fx, ingest, market, media, pending_feed, refs, waha, worker
 from .auth import is_admin as live_is_admin, staff_accounts
 from .config import settings
 from .db import AIUsage, AIUsageGroup, Dealer, Group, Message, Offer, SessionLocal, StockItem, init_db, utcnow
@@ -186,7 +186,8 @@ def list_offers(q: str = "", direction: str = "", brand: str = "", condition: st
                 max_price: Optional[float] = None, year_from: Optional[int] = None,
                 year_to: Optional[int] = None, priced_only: bool = False, deals_only: bool = False,
                 hide_handled: bool = False, show_blocked: bool = False, track: str = "",
-                sort: str = "last_seen", order: str = "desc", page: int = 1, page_size: int = 50):
+                 sort: str = "last_seen", order: str = "desc", page: int = 1, page_size: int = 50,
+                 include_messages: bool = False):
     page_size = max(1, min(page_size, 200))
     stmt = select(Offer).where(Offer.archived.is_(False))
     days = PERIODS.get(period, 14)
@@ -234,14 +235,46 @@ def list_offers(q: str = "", direction: str = "", brand: str = "", condition: st
             conds.append(Offer.reference_norm.contains(ref))
         stmt = stmt.where(or_(*conds))
     col = SORTS.get(sort, Offer.last_seen_at)
-    ordering = [col.is_(None), col.asc() if order == "asc" else col.desc(), Offer.id.desc()]
     with SessionLocal() as s:
-        total = s.scalar(select(func.count()).select_from(stmt.subquery()))
-        rows = s.scalars(stmt.order_by(*ordering).offset((page - 1) * page_size).limit(page_size)).all()
+        show_messages = include_messages and not any((
+            direction, brand, condition, set_type, country, min_price is not None,
+            max_price is not None, year_from is not None, year_to is not None,
+            priced_only, deals_only, track,
+        ))
+        total, ids, offers, messages = pending_feed.page(
+            s, stmt, col, sort=sort, order=order, page_number=max(1, page),
+            page_size=page_size, days=days, group=group, query=q,
+            include_messages=show_messages, show_blocked=show_blocked,
+        )
         groups = {g.id: g.name for g in s.scalars(select(Group)).all()}
-        ctx = feed_ctx(s, rows)
+        ctx = feed_ctx(s, list(offers.values()))
+        group_rows = {g.id: g for g in s.scalars(select(Group).where(
+            Group.id.in_({m.group_id for m in messages.values()}))).all()} if messages else {}
+        budget_blocked = worker.budget_status(s)["blocked"] if messages else False
+        items = []
+        for kind, item_id in ids:
+            if kind == "offer":
+                offer = offer_json(offers[item_id], groups, ctx)
+                items.append({"kind": "offer", **offer} if include_messages else offer)
+            else:
+                msg = messages[item_id]
+                items.append(pending_feed.message_preview(msg, group_rows[msg.group_id], budget_blocked))
     return {"total": total, "page": page, "page_size": page_size,
-            "items": [offer_json(o, groups, ctx) for o in rows]}
+            "items": items}
+
+
+@app.get("/api/messages/{message_id}", dependencies=[Depends(is_staff)])
+def message_detail(message_id: int):
+    with SessionLocal() as s:
+        msg = s.get(Message, message_id)
+        group = s.get(Group, msg.group_id) if msg else None
+        if not msg or not group or not group.enabled:
+            raise HTTPException(404, "Message not found")
+        return {"id": msg.id, "text": msg.text, "sender_name": msg.sender_name,
+                "sender_phone": msg.sender_phone, "group": group.name,
+                "timestamp": msg.ts.isoformat() + "Z", "status": msg.status,
+                "display_status": pending_feed.message_status(
+                    msg, group, worker.budget_status(s)["blocked"])}
 
 
 @app.get("/api/offers/{offer_id}", dependencies=[Depends(is_staff)])
