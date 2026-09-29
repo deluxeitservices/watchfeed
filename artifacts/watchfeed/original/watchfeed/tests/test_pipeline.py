@@ -15,7 +15,7 @@ import pytest
 import httpx as _httpx
 from fastapi.testclient import TestClient
 from PIL import Image
-from app import alerts as alerts_mod, main, media as media_mod, parser, waha, worker
+from app import alerts as alerts_mod, main, media as media_mod, parser, pending_feed, waha, worker
 from app.db import Message, Offer, SessionLocal, engine, utcnow
 
 ADMIN = {"Authorization": "Basic " + base64.b64encode(b"admin:a").decode()}
@@ -980,3 +980,71 @@ def test_incoming_message_is_staff_visible_until_parsed(client):
     pages = [client.get("/api/offers", headers=STAFF, params={
         **params, "page_size": 1, "page": n}).json()["items"][0] for n in (1, 2, 3)]
     assert len({(item["kind"], item["id"]) for item in pages}) == 3
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("2023 Full set £10750", ["WTS"]),
+    ("Rolex 126710BLNR HKD128k available", ["WTS"]),
+    ("WTB Rolex 126500LN, budget £12000", ["WTB"]),
+    ("Looking for Omega Speedmaster, can pay £3000", ["WTB"]),
+    ("WTB Rolex 126500LN\nWTS Omega Speedmaster £3000", ["WTS", "WTB"]),
+    ("thanks, lunch was £10", []),
+    ("need a room for £1000", []),
+    ("Omega Speedmaster 2023 full set", []),
+])
+def test_provisional_direction_from_text(text, expected):
+    assert pending_feed.provisional_directions(text) == expected
+
+
+def test_direction_filters_include_provisional_rows_before_pagination(client):
+    from app.db import Group
+
+    group_id = "120363-direction-test@g.us"
+    texts = {
+        "price": "2023 Full set £10750",
+        "sale": "WTS Omega Speedmaster £3000",
+        "buyer": "WTB Rolex 126500LN, budget £12000",
+        "mixed": "WTB Rolex 126500LN\nWTS Omega Speedmaster £3000",
+        "unknown": "thanks for lunch £10",
+    }
+    with SessionLocal() as s:
+        group = s.get(Group, group_id)
+        if group is None:
+            s.add(Group(id=group_id, name="Direction test", enabled=True))
+        else:
+            group.enabled = True
+        for key, text in texts.items():
+            s.add(Message(wa_id="direction-" + key, group_id=group_id,
+                          text=text, text_hash="direction-" + key,
+                          ts=utcnow(), status="BUDGET"))
+        s.commit()
+
+    def feed(**filters):
+        return client.get("/api/offers", headers=STAFF, params={
+            "include_messages": "true", "group": group_id, **filters}).json()
+
+    assert client.get("/api/offers", headers=STAFF, params={"group": group_id}).json()["total"] == 0
+    assert feed()["total"] == 5
+    sales = feed(direction="WTS")
+    buys = feed(direction="WTB")
+    assert sales["total"] == 3 and buys["total"] == 2
+    assert all("WTS" in item["directions"] for item in sales["items"])
+    assert all("WTB" in item["directions"] for item in buys["items"])
+    assert sum(item["directions"] == [] for item in feed()["items"]) == 1
+    pages = [feed(direction="WTS", page_size=1, page=n) for n in (1, 2, 3)]
+    assert all(p["total"] == 3 for p in pages)
+    assert len({p["items"][0]["id"] for p in pages}) == 3
+
+    with SessionLocal() as s:
+        message = s.query(Message).filter_by(wa_id="direction-price").one()
+        count, _ = worker.save_offers(s, message, [{
+            "direction": "WTS", "brand": "Rolex", "reference": "126507ZZ",
+            "price": 10750, "currency": "GBP", "source_text": texts["price"],
+        }])
+        assert count == 1
+        message.status = "PARSED"
+        s.commit()
+    assert feed()["total"] == 5
+    updated = feed(direction="WTS")
+    assert updated["total"] == 3
+    assert [item["kind"] for item in updated["items"]].count("offer") == 1

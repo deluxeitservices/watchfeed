@@ -237,13 +237,13 @@ def list_offers(q: str = "", direction: str = "", brand: str = "", condition: st
     col = SORTS.get(sort, Offer.last_seen_at)
     with SessionLocal() as s:
         show_messages = include_messages and not any((
-            direction, brand, condition, set_type, country, min_price is not None,
+            brand, condition, set_type, country, min_price is not None,
             max_price is not None, year_from is not None, year_to is not None,
             priced_only, deals_only, track,
         ))
         total, ids, offers, messages = pending_feed.page(
             s, stmt, col, sort=sort, order=order, page_number=max(1, page),
-            page_size=page_size, days=days, group=group, query=q,
+            page_size=page_size, days=days, group=group, query=q, direction=direction,
             include_messages=show_messages, show_blocked=show_blocked,
         )
         groups = {g.id: g.name for g in s.scalars(select(Group)).all()}

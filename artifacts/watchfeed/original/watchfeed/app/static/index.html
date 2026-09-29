@@ -52,9 +52,12 @@ function params(){const p=new URLSearchParams(),v=id=>$(id).value.trim();if(v("q
   p.set("sort",state.sort);p.set("order",state.order);p.set("page",state.page);p.set("page_size",state.pageSize);p.set("include_messages","true");return p;}
 function row(o){
   if(o.kind==="message"){
+    const directions=o.directions||[];
     return `<tr class="message-row"><td>—</td>
       <td title="${esc(new Date(o.last_seen_at).toLocaleString("en-GB"))}">${ago(o.last_seen_at)}</td>
-      <td>—</td>
+      <td title="${directions.length?"Inferred from message text, not AI-confirmed":""}">${directions.length?
+        directions.map(d=>`<span class="badge dir ${esc(d)}">${esc(d)}</span>`).join(" "):"—"}
+        ${directions.length?'<div class="small muted">Provisional</div>':""}</td>
       <td><div class="message-preview" title="${esc(o.preview)}">${esc(o.preview || "—")}</div><div class="small muted">${esc(o.group)}</div></td>
       <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
       <td>${esc(o.sender_name || "—")}${o.sender_phone?`<div class="small">${esc("+"+o.sender_phone)}</div>`:""}</td>
